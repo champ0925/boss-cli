@@ -153,18 +153,19 @@ async function readJobsFromFrame(frame: Frame): Promise<JobReadResult> {
   return (await frame.evaluate(
     `(() => {
       const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
-      const rows = Array.from(document.querySelectorAll(".job-jobInfo-warp"));
+      const rows = Array.from(document.querySelectorAll(".job-item-container"));
       const jobs = rows.map((el) => {
-        const statusText = norm(el.querySelector(".job-status-wrapper .status-box")?.textContent);
-        const labelText = norm(el.querySelector(".job-title .label-common")?.textContent);
-        const meta = Array.from(el.querySelectorAll(".job-main-info-wrapper .info-labels span"))
+        const statusText = norm(el.querySelector(".job-status-wrapper .job-status, .job-status-wrapper .status")?.textContent) ||
+          norm(el.querySelector(".job-status-wrapper")?.textContent)?.split(/\s+/)[0];
+        const labelText = norm(el.querySelector(".job-labels")?.textContent);
+        const meta = Array.from(el.querySelectorAll(".job-main-info-wrapper > *"))
           .map((x) => norm(x.textContent))
           .filter(Boolean);
-        const nums = Array.from(el.querySelectorAll(".job-about-num-wrapper .inner-box .num"))
+        const nums = Array.from(el.querySelectorAll(".job-about-num-wrapper .num"))
           .map((x) => norm(x.textContent));
         return {
           id: norm(el.getAttribute("data-id")),
-          title: norm(el.querySelector(".job-title a")?.textContent),
+          title: norm(el.querySelector(".job-name")?.textContent),
           label: labelText,
           status: statusText,
           meta,
@@ -187,11 +188,45 @@ async function readJobsFromFrame(frame: Frame): Promise<JobReadResult> {
   )) as JobReadResult;
 }
 
+async function dumpJobListElements(page: Page): Promise<void> {
+  const frames = page.frames();
+  for (const frame of frames) {
+    try {
+      const candidates = (await frame.evaluate(
+        `(() => {
+          const isVisible = (el) => {
+            if (!(el instanceof HTMLElement)) return false;
+            const st = window.getComputedStyle(el);
+            if (st.display === "none" || st.visibility === "hidden") return false;
+            return true;
+          };
+          const rows = Array.from(document.querySelectorAll("[class*='job'], [class*='position'], [class*='list']"));
+          return rows
+            .filter((el) => isVisible(el))
+            .slice(0, 40)
+            .map((el) => ({
+              class: el.className || "",
+              text: (el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 60),
+            }));
+        })()`,
+      )) as Array<{ class: string; text: string }>;
+      if (candidates.length > 0) {
+        console.warn(`[boss-cli] frame ${frame.url()} 职位列表候选元素:`);
+        for (const c of candidates) {
+          console.warn(`[boss-cli]   class="${c.class}" text="${c.text}"`);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
+
 async function readJobsFromPageAnyFrame(
   page: Page,
 ): Promise<JobListContext> {
   const main = await readJobsFromFrame(page.mainFrame());
-  if (main.rows > 0 || main.totalText.length > 0) {
+  if (main.rows > 0) {
     return {
       frame: page.mainFrame(),
       data: main,
@@ -208,7 +243,7 @@ async function readJobsFromPageAnyFrame(
     }
     try {
       const state = await readJobsFromFrame(frame);
-      if (state.rows > 0 || state.totalText.length > 0) {
+      if (state.rows > 0) {
         return {
           frame,
           data: state,
@@ -222,6 +257,7 @@ async function readJobsFromPageAnyFrame(
     }
   }
 
+  await dumpJobListElements(page);
   return {
     frame: page.mainFrame(),
     data: main,
@@ -266,14 +302,14 @@ async function clickEditForJob(frame: Frame, job: JobListItem): Promise<void> {
       const jobId = ${targetId};
       const title = ${targetTitle};
       const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
-      const rows = Array.from(document.querySelectorAll(".job-jobInfo-warp"));
+      const rows = Array.from(document.querySelectorAll(".job-item-container"));
       let row = null;
       if (jobId) {
         row = rows.find((el) => norm(el.getAttribute("data-id")) === jobId) ?? null;
       }
       if (!row && title) {
         row = rows.find((el) => {
-          const t = norm(el.querySelector(".job-title a")?.textContent);
+          const t = norm(el.querySelector(".job-name")?.textContent);
           return t === title;
         }) ?? null;
       }
@@ -286,7 +322,7 @@ async function clickEditForJob(frame: Frame, job: JobListItem): Promise<void> {
     })()`,
   )) as boolean;
   if (!clicked) {
-    throw new Error(`未找到职位“${job.title}”的编辑入口`);
+    throw new Error(`未找到职位"${job.title}"的编辑入口`);
   }
 }
 
@@ -434,11 +470,11 @@ export async function runListOpenPositions(
     return await withBossSessionPage(async (page) => {
       const currentUrl = page.url();
       if (!isBossChatJobListUrl(currentUrl)) {
-        await clickBossSidebarMenuToPath(page, '职位管理', '/web/chat/job/list');
+        await page.goto(BOSS_CHAT_JOB_LIST_URL, { waitUntil: 'load', timeout: 60_000 });
         await sleepRandom(settleMin, settleMax);
       }
       if (!isBossChatJobListUrl(page.url())) {
-        throw new Error('通过侧边栏“职位管理”进入职位页失败，请确认已登录并可访问 /web/chat/job/list。');
+        throw new Error('进入职位页失败，请确认已登录并可访问 /web/chat/job/list。');
       }
       const ready = await waitForJobRowsReady(page, 16_000);
       await sleepRandom(350, 920);
