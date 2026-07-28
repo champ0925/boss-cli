@@ -1,6 +1,10 @@
 import type { ElementHandle, Frame, Page } from 'puppeteer-core';
+import { stat, unlink } from 'node:fs/promises';
 import { sleepRandom } from '../browser/timing.js';
 import { resumeHeight, setTempHeight } from '../browser/viewport_temp.js';
+
+/** 判定为空白截图的文件大小阈值（字节）。正常简历截图普遍 >300KB，空白图 <25KB。 */
+const BLANK_SCREENSHOT_MAX_BYTES = 40 * 1024;
 
 /** 在线简历 iframe：`src` 常为相对路径 `/web/frame/c-resume/...`，故用子串匹配 */
 export const C_RESUME_IFRAME_SELECTOR =
@@ -112,15 +116,44 @@ export async function findVisibleCResumeIframeHandle(page: Page): Promise<Elemen
   return null;
 }
 
+/**
+ * 采样 iframe 内简历内容指纹（文本长度 + 内容高度）。
+ * BOSS 简历 iframe 的 DOM 是异步渲染的：`readyState` 一旦到 `interactive`
+ * 且骨架占位高度已 > 100，旧判定就会误报 ready，而正文可能还没填进去。
+ * 因此必须等「文本量」和「内容高度」连续两次采样都稳定才视为渲染完成。
+ */
+async function sampleResumeContentFingerprint(
+  contentFrame: Frame,
+): Promise<{ textLen: number; contentHeight: number; nodeCount: number } | null> {
+  try {
+    return (await contentFrame.evaluate(`(() => {
+      const body = document.body;
+      const doc = document.documentElement;
+      if (!body) return null;
+      // innerText 在跨域 iframe 中可能返回空，退到 textContent
+      const rawText = body.innerText || body.textContent || "";
+      const text = rawText.replace(/\\s+/g, "");
+      const contentHeight = Math.max(body.scrollHeight || 0, doc?.scrollHeight || 0);
+      const nodeCount = body.getElementsByTagName("*").length;
+      return { textLen: text.length, contentHeight, nodeCount };
+    })()`)) as { textLen: number; contentHeight: number; nodeCount: number } | null;
+  } catch {
+    return null;
+  }
+}
+
 export async function waitForVisibleCResumeIframeReady(
   page: Page,
-  timeoutMs = 6_000,
+  timeoutMs = 18_000,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
+  /** 上一次成功的采样指纹；用于判定「连续两次稳定」 */
+  let lastFingerprint: { textLen: number; contentHeight: number; nodeCount: number } | null = null;
   while (Date.now() < deadline) {
     const iframe = await findVisibleCResumeIframeHandle(page);
     if (!iframe) {
-      await sleepRandom(100, 180);
+      lastFingerprint = null;
+      await sleepRandom(150, 250);
       continue;
     }
     try {
@@ -128,28 +161,34 @@ export async function waitForVisibleCResumeIframeReady(
       const contentFrame = await iframe.contentFrame();
       if (box && box.width > 8 && box.height > 8) {
         if (!contentFrame) {
+          // 跨域拿不到内容帧：保守起见多等一段固定时间再放行
+          await sleepRandom(1_200, 1_800);
           return true;
         }
-        try {
-          const ready = (await contentFrame.evaluate(`(() => {
-            const body = document.body;
-            const doc = document.documentElement;
-            const readyStateOk = document.readyState === "complete" || document.readyState === "interactive";
-            const contentHeight = Math.max(body?.scrollHeight || 0, doc?.scrollHeight || 0);
-            return readyStateOk && contentHeight > 100;
-          })()`)) as boolean;
-          if (ready) {
+        const fp = await sampleResumeContentFingerprint(contentFrame);
+        // 判定「已加载」：文本量 + 内容高度都要达标。
+        // 注意不能用 nodeCount：BOSS 简历正文在嵌套子 frame 里，外层只能采到个位数节点。
+        const loaded = !!fp && fp.textLen > 60 && fp.contentHeight > 300;
+        if (loaded && fp) {
+          if (
+            lastFingerprint &&
+            lastFingerprint.textLen === fp.textLen &&
+            lastFingerprint.contentHeight === fp.contentHeight
+          ) {
+            // 连续两次采样一致 → 视为正文渲染稳定
             return true;
           }
-        } catch {
-          return true;
+          lastFingerprint = fp;
+        } else {
+          lastFingerprint = null;
         }
       }
     } finally {
       await iframe.dispose();
     }
-    await sleepRandom(100, 180);
+    await sleepRandom(250, 400);
   }
+  // 超时也视为没加载出来：返回 false，让上层跳过这份简历，不截空白图
   return false;
 }
 
@@ -163,32 +202,115 @@ export async function captureCResumeIframeToFile(
   absPath: string,
 ): Promise<boolean> {
   try {
-    await setTempHeight(page, preOpenViewport);
-    await waitForVisibleCResumeIframeReady(page, 2_000);
+    // 注意：不要在这里先拉高视口。视口突变会触发 iframe 重排/懒加载重置，
+    // 内容被清空后重新渲染，就绪判定会踩在窗口期误判 ready，截到空白。
+    // 正确顺序：先在原始视口下等内容稳定 → 再调视口 → 调完再等一次稳定。
+
+    // 第一次就绪：原始视口下等正文渲染稳定
+    const ready = await waitForVisibleCResumeIframeReady(page, 15_000);
+    if (!ready) {
+      return false;
+    }
 
     const iframe = await findVisibleCResumeIframeHandle(page);
     if (!iframe) {
       return false;
     }
 
-    await iframe.evaluate(`((el) => {
+    // 1) 把 iframe 内部滚回顶部（它可能停在之前的滚动位置）
+    try {
+      const contentFrame = await iframe.contentFrame();
+      if (contentFrame) {
+        await contentFrame.evaluate(`(() => { window.scrollTo(0, 0); })()`);
+      }
+    } catch { /* 跨域忽略 */ }
+
+    // 2) 把 iframe 元素本身撑开到它的内容完整高度，让内部不再需要滚动
+    //    这是关键：iframe 默认只渲染可视区，撑开后内部全部内容才会进入渲染树
+    let targetHeight = 0;
+    try {
+      const contentFrame = await iframe.contentFrame();
+      if (contentFrame) {
+        targetHeight = (await contentFrame.evaluate(`(() => {
+          const body = document.body;
+          const doc = document.documentElement;
+          return Math.max(body?.scrollHeight || 0, doc?.scrollHeight || 0);
+        })()`)) as number;
+      }
+    } catch { /* 跨域忽略 */ }
+
+    await iframe.evaluate(`((el, h) => {
+      if (h > 0) {
+        el.style.height = h + "px";
+        el.style.maxHeight = "none";
+      }
       el.scrollIntoView({ block: "start", inline: "nearest" });
-    })`);
+    })`, targetHeight).catch(() => {});
 
     const box = await iframe.boundingBox();
     if (!box) {
       await iframe.dispose();
       return false;
     }
+    await iframe.dispose();
 
+    // 3) 把页面视口拉到能装下整个撑开后的 iframe（含顶部偏移）
+    const docTop = box.y;
+    const wanted = Math.ceil(docTop + Math.max(targetHeight, box.height, 1200) + 40);
+    const capped = Math.min(wanted, 16_384);
+    const curVp = page.viewport();
+    await page.setViewport({
+      width: curVp?.width ?? 1280,
+      height: capped,
+      deviceScaleFactor: curVp?.deviceScaleFactor ?? 1,
+      isMobile: curVp?.isMobile ?? false,
+      hasTouch: curVp?.hasTouch ?? false,
+      isLandscape: curVp?.isLandscape ?? false,
+    });
+
+    // 视口变化触发重排/重绘，必须再等一次内容稳定（这次等不到就是真空白）
+    const readyAfterResize = await waitForVisibleCResumeIframeReady(page, 12_000);
+    if (!readyAfterResize) {
+      return false;
+    }
+    // 固定缓冲，等图片/字体最后绘制
+    await sleepRandom(500, 900);
+
+    // 4) 截整个页面（captureBeyondViewport 在页面级生效），再裁到 iframe 区域
+    const iframe2 = await findVisibleCResumeIframeHandle(page);
+    if (!iframe2) {
+      return false;
+    }
+    const clip = await iframe2.boundingBox();
+    await iframe2.dispose();
+    if (!clip) {
+      return false;
+    }
+    await page.screenshot({
+      path: absPath,
+      type: 'png',
+      captureBeyondViewport: true,
+      clip: {
+        x: Math.max(0, clip.x),
+        y: Math.max(0, clip.y),
+        width: Math.ceil(clip.width),
+        height: Math.ceil(clip.height),
+      },
+    });
+
+    // 截图后立即校验：文件过小 = 实际是空白图（加载判定被绕过/截图时内容被清空），
+    // 删除并返回 false，让上层跳过这份简历，不污染结果目录
     try {
-      await iframe.screenshot({
-        path: absPath,
-        type: 'png',
-        captureBeyondViewport: true,
-      });
-    } finally {
-      await iframe.dispose();
+      const st = await stat(absPath);
+      if (st.size < BLANK_SCREENSHOT_MAX_BYTES) {
+        await unlink(absPath).catch(() => {});
+        await closeCResumePanel(page);
+        return false;
+      }
+    } catch {
+      // 读不到文件也视为失败
+      await closeCResumePanel(page);
+      return false;
     }
 
     await sleepRandom(

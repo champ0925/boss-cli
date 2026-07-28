@@ -85,9 +85,11 @@ export async function runPreview(options: PreviewOptions): Promise<string> {
         }
         throw new Error('点击后未出现在线简历 iframe（c-resume）。');
       }
-      const ready = await waitForVisibleCResumeIframeReady(page);
+      // 等不到「内容稳定」信号 = 简历没加载出来：关掉弹层并跳过，不截空白图浪费名额
+      const ready = await waitForVisibleCResumeIframeReady(page, 18_000);
       if (!ready) {
-        throw new Error('在线简历 iframe 已出现，但内容未在预期时间内渲染完成。');
+        await closeCResumePanel(page);
+        throw new Error('在线简历未加载完成（可能加载失败或被限流），已跳过未截图。');
       }
       ensureAppDataLayout();
       const fileName = `preview-${safeResumeScreenshotFileBase(target)}-${Date.now()}.png`;
@@ -96,7 +98,7 @@ export async function runPreview(options: PreviewOptions): Promise<string> {
       const ok = await captureCResumeIframeToFile(page, savedOriginal, absPath);
       if (!ok) {
         await closeCResumePanel(page);
-        throw new Error('在线简历 iframe 截图失败。');
+        throw new Error('截图为空白或截图失败（已删除空白文件），已跳过该简历。');
       }
 
       const disclaimer =

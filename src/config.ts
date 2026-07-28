@@ -30,11 +30,31 @@ export const CACHE_DIR = join(APP_HOME, '.cache');
 /** Puppeteer 用户数据目录（与 CDP 启动默认目录一致） */
 export const BROWSER_USER_DATA_DIR = join(CACHE_DIR, 'browser-data');
 
-/** `chat` 抓取在线简历时对 iframe 区域截图保存目录 */
-export const RESUME_SCREENSHOTS_DIR = join(CACHE_DIR, 'resume-screenshots');
+/** 当天日期目录名，如 2026-07-28；可用 BOSS_RESUME_DATE_DIR 覆盖（测试用） */
+function resumeDateDir(): string {
+  return (
+    process.env.BOSS_RESUME_DATE_DIR?.trim() ||
+    new Date().toISOString().slice(0, 10)
+  );
+}
 
-/** 在线简历截图经 OCR 后的纯文本保存目录（与截图同名 `.txt`） */
-export const RESUME_OCR_DIR = join(CACHE_DIR, 'ocr');
+/**
+ * `chat`/`preview` 抓取在线简历时对 iframe 区域截图保存目录。
+ * 优先使用环境变量 `BOSS_RESUME_SCREENSHOTS_DIR`（绝对路径，不再追加日期目录），
+ * 未设置时默认存到当前工作目录下的 `resumes/<日期>/screenshots/`（即项目内按天分目录）。
+ */
+export const RESUME_SCREENSHOTS_DIR =
+  process.env.BOSS_RESUME_SCREENSHOTS_DIR?.trim() ||
+  join(process.cwd(), 'resumes', resumeDateDir(), 'screenshots');
+
+/**
+ * 在线简历截图经 OCR 后的纯文本保存目录（与截图同名 `.txt`）。
+ * 优先使用环境变量 `BOSS_RESUME_OCR_DIR`（绝对路径，不再追加日期目录），
+ * 未设置时默认存到当前工作目录下的 `resumes/<日期>/ocr/`（即项目内按天分目录）。
+ */
+export const RESUME_OCR_DIR =
+  process.env.BOSS_RESUME_OCR_DIR?.trim() ||
+  join(process.cwd(), 'resumes', resumeDateDir(), 'ocr');
 
 let appDataLayoutReady = false;
 
