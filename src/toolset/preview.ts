@@ -39,6 +39,23 @@ export type PreviewOptions = {
   candidateTarget: string;
 };
 
+/** 把 Date 格式化为文件名安全的时间串：yyyy-MM-dd HH-mm-ss（Windows 文件名不能含 :） */
+function formatFileTimestamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+
+/**
+ * 生成简历截图文件名：在线简历-姓名-岗位-时间.png
+ * 岗位名从环境变量 BOSS_RESUME_JOB_TITLE 读（批量脚本调用时注入）；没有则省略。
+ */
+function buildResumeScreenshotFileName(candidateName: string): string {
+  const name = safeResumeScreenshotFileBase(candidateName);
+  const jobTitle = (process.env.BOSS_RESUME_JOB_TITLE ?? '').trim();
+  const jobPart = jobTitle ? `-${safeResumeScreenshotFileBase(jobTitle)}` : '';
+  return `在线简历-${name}${jobPart}-${formatFileTimestamp(new Date())}.png`;
+}
+
 export async function runPreview(options: PreviewOptions): Promise<string> {
   const target = options.candidateTarget.trim();
   if (!target) {
@@ -92,7 +109,7 @@ export async function runPreview(options: PreviewOptions): Promise<string> {
         throw new Error('在线简历未加载完成（可能加载失败或被限流），已跳过未截图。');
       }
       ensureAppDataLayout();
-      const fileName = `preview-${safeResumeScreenshotFileBase(target)}-${Date.now()}.png`;
+      const fileName = buildResumeScreenshotFileName(target);
       const absPath = join(RESUME_SCREENSHOTS_DIR, fileName);
 
       const ok = await captureCResumeIframeToFile(page, savedOriginal, absPath);
