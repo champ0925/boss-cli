@@ -56,6 +56,15 @@ export const RESUME_OCR_DIR =
   process.env.BOSS_RESUME_OCR_DIR?.trim() ||
   join(process.cwd(), 'resumes', resumeDateDir(), 'ocr');
 
+/**
+ * 聊天中「附件简历」下载保存目录。
+ * 优先使用环境变量 `BOSS_RESUME_ATTACHMENTS_DIR`（绝对路径，不再追加日期目录），
+ * 未设置时默认存到当前工作目录下的 `resumes/<日期>/attachments/`（即项目内按天分目录）。
+ */
+export const RESUME_ATTACHMENTS_DIR =
+  process.env.BOSS_RESUME_ATTACHMENTS_DIR?.trim() ||
+  join(process.cwd(), 'resumes', resumeDateDir(), 'attachments');
+
 let appDataLayoutReady = false;
 
 /** 确保 `~/.boss-cli/.cache` 目录存在（幂等） */
@@ -78,6 +87,9 @@ export function ensureAppDataLayout(): void {
   }
   if (!existsSync(RESUME_OCR_DIR)) {
     mkdirSync(RESUME_OCR_DIR, { recursive: true });
+  }
+  if (!existsSync(RESUME_ATTACHMENTS_DIR)) {
+    mkdirSync(RESUME_ATTACHMENTS_DIR, { recursive: true });
   }
   const agentSkills = getAgentSkillsDir();
   if (!existsSync(agentSkills)) {

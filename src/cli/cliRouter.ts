@@ -151,10 +151,11 @@ function printHelp(): void {
       按 boss list 输出的 1-based 序号打开会话；--unread 表示序号对应 boss list --unread
       同时提供姓名时会校验该序号候选人姓名，--strict 表示精确校验
       仅用于已建立联系的候选人（即在 list 里可见的会话对象）
-  boss action <操作> [--remark <备注>]
+  boss action <操作> [--remark <备注>] [--out <目录>]
       仅在当前聊天页已打开候选人详情时执行操作，并只返回 action 执行结果
-      操作: resume | not-fit | remark | agree-resume | request-attachment-resume | history | wechat
+      操作: resume | not-fit | remark | agree-resume | request-attachment-resume | download-resume | history | wechat
       request-attachment-resume：工具栏「求简历」，确认后向对方发送默认话术索要附件简历（需双方各至少发过一条消息）
+      download-resume：下载对方已发送且我方已同意的附件简历，默认保存到 resumes/<日期>/attachments/，可用 --out 指定目录
       操作为 remark 时必须提供 --remark
   boss send [--text <内容>] [-t <内容>] [--request-resume]
       仅发送文本消息（等价于在当前会话输入框发送后回车）
@@ -453,6 +454,8 @@ export async function executeCommand(argv: string[]): Promise<string> {
       'request-attachment-resume': 'request-attachment-resume',
       'ask-attachment-resume': 'request-attachment-resume',
       'ask-resume': 'request-attachment-resume',
+      'download-resume': 'download-resume',
+      'download-attachment-resume': 'download-resume',
       history: 'history',
       'chat-history': 'history',
       wechat: 'exchange-wechat',
@@ -461,14 +464,15 @@ export async function executeCommand(argv: string[]): Promise<string> {
     const action = actionMap[raw];
     if (!action) {
       die(
-        '❌ 用法: action <resume|not-fit|remark|agree-resume|request-attachment-resume|history|wechat> [--remark <备注>]',
+        '❌ 用法: action <resume|not-fit|remark|agree-resume|request-attachment-resume|download-resume|history|wechat> [--remark <备注>] [--out <目录>]',
       );
     }
     const remark = (opts.remark ?? '').trim();
     if (action === 'remark' && !remark) {
       die('❌ 当操作为 remark 时，必须提供 --remark <备注内容>。');
     }
-    return implChatAction({ action, remark });
+    const outDir = (opts.out ?? opts['out-dir'] ?? '').trim();
+    return implChatAction({ action, remark, outDir: outDir || undefined });
   }
 
   if (cmd === 'send') {

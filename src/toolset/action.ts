@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Page } from 'puppeteer-core';
 import {
@@ -18,7 +19,7 @@ import {
   safeResumeScreenshotFileBase,
   waitForVisibleCResumeIframeReady,
 } from '../common/c_resume_capture.js';
-import { ensureAppDataLayout, RESUME_SCREENSHOTS_DIR } from '../config.js';
+import { ensureAppDataLayout, RESUME_ATTACHMENTS_DIR, RESUME_SCREENSHOTS_DIR } from '../config.js';
 import { isResumeOcrEnabled, ocrResumePngToTextFile } from '../ocr/index.js';
 import { runGetCommunicationHistory } from './chat.js';
 
@@ -549,18 +550,145 @@ async function captureOnlineResumeScreenshot(page: Page, candidateLabel: string)
   return absPath;
 }
 
+/**
+ * 下载聊天中对方已发送且我方已同意的「附件简历」。
+ *
+ * 流程：在消息列表找到附件简历卡片 → 点击「点击预览附件简历」→ 等待
+ * `.attachment-iframe`（pdf-viewer-b）出现 → 从 iframe `src` 的 `url=` 参数解出
+ * 真实文件地址（`/wflow/zpgeek/download/preview4boss/...`）→ 页面内
+ * `fetch(url, { credentials: 'include' })` 取回二进制 → 写盘。
+ *
+ * @param outDir 保存目录；未提供时默认 `RESUME_ATTACHMENTS_DIR`（`resumes/<日期>/attachments/`）。
+ */
+export async function runDownloadAttachmentResume(page: Page, outDir?: string): Promise<string> {
+  await ensureInCandidateChat(page, '下载附件简历');
+  await sleepRandom(200, 550);
+
+  // 1) 找到附件简历卡片并点击「点击预览附件简历」
+  const clicked = (await page.evaluate(`(() => {
+    function norm(v) { return (v ?? "").replace(/\\s+/g, " ").trim(); }
+    function isVisible(el) {
+      if (!(el instanceof HTMLElement)) return false;
+      const st = window.getComputedStyle(el);
+      if (st.display === "none" || st.visibility === "hidden") return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    }
+    const items = Array.from(document.querySelectorAll(".chat-message-list .message-item"));
+    for (let i = items.length - 1; i >= 0; i--) {
+      const friend = items[i].querySelector(".item-friend");
+      if (!friend) continue;
+      if (!friend.querySelector(".resume-icon")) continue;
+      const btn = friend.querySelector(".message-card-buttons .card-btn");
+      if (!(btn instanceof HTMLElement)) continue;
+      const label = norm(btn.textContent);
+      if (!label.includes("预览附件简历")) continue;
+      if (!isVisible(btn)) continue;
+      btn.scrollIntoView({ block: "center", inline: "nearest" });
+      btn.click();
+      return true;
+    }
+    return false;
+  })()`)) as boolean;
+
+  if (!clicked) {
+    throw new Error(
+      '未找到可预览的附件简历卡片。请确认对方已发送附件简历，且我方已点击「同意」接收。',
+    );
+  }
+
+  // 2) 等待附件预览 iframe 出现（取最后一个：历史弹层可能未关闭而残留多个）
+  const iframeSel = 'iframe.attachment-iframe';
+  await page.waitForSelector(iframeSel, { timeout: 15_000 }).catch(() => null);
+  const src = (await page.evaluate((sel: string) => {
+    const list = Array.from(document.querySelectorAll(sel)) as HTMLIFrameElement[];
+    if (list.length === 0) return '';
+    const el = list[list.length - 1];
+    return el?.src ?? '';
+  }, iframeSel)) as string;
+
+  if (!src) {
+    throw new Error('已点击「点击预览附件简历」，但附件预览弹层未出现。');
+  }
+
+  await sleepRandom(400, 900);
+
+  // 3) 从 iframe src 解析真实文件 URL
+  const urlMatch = src.match(/[?&]url=([^&]+)/);
+  if (!urlMatch) {
+    throw new Error(`附件预览 iframe 缺少 url 参数，无法解析真实文件地址。src=${src}`);
+  }
+  const decoded = decodeURIComponent(urlMatch[1]);
+  const fullUrl = decoded.startsWith('http') ? decoded : `https://www.zhipin.com${decoded}`;
+
+  // 4) 页面内带 cookie fetch，拿回 base64
+  const result = (await page.evaluate(async (u: string) => {
+    const resp = await fetch(u, { credentials: 'include' });
+    if (!resp.ok) {
+      return { ok: false as const, status: resp.status, statusText: resp.statusText };
+    }
+    const blob = await resp.blob();
+    const buf = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let binary = '';
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode.apply(
+        null,
+        Array.from(bytes.subarray(i, i + CHUNK)) as unknown as number[],
+      );
+    }
+    return {
+      ok: true as const,
+      contentType: blob.type || 'application/octet-stream',
+      size: bytes.length,
+      base64: btoa(binary),
+    };
+  }, fullUrl)) as
+    | { ok: false; status: number; statusText: string }
+    | { ok: true; contentType: string; size: number; base64: string };
+
+  if (!result.ok) {
+    throw new Error(`附件下载失败：HTTP ${result.status} ${result.statusText}`);
+  }
+
+  // 5) 关闭附件预览弹层，避免遮挡后续操作（关闭按钮 class 为 .close-btn）
+  await page.evaluate(`(() => {
+    const wraps = Array.from(document.querySelectorAll(".boss-popup__wrapper[class*=resume]"));
+    for (const w of wraps) {
+      const btn = w.querySelector(".close-btn");
+      if (btn instanceof HTMLElement) btn.click();
+    }
+  })()`).catch(() => undefined);
+
+  // 6) 写盘
+  const candidateLabel = await getCandidateLabelForResumeShot(page);
+  const ext = result.contentType.includes('pdf')
+    ? '.pdf'
+    : result.contentType.includes('word') || result.contentType.includes('officedocument')
+      ? '.docx'
+      : '.bin';
+  const fileName = `${safeResumeScreenshotFileBase(candidateLabel)}-attachment-${Date.now()}${ext}`;
+  const dir = outDir?.trim() || RESUME_ATTACHMENTS_DIR;
+  const absPath = join(dir, fileName);
+  await writeFile(absPath, Buffer.from(result.base64, 'base64'));
+
+  return `附件简历下载成功：${absPath}（${result.size} bytes, ${result.contentType}）`;
+}
+
 export type ChatPageAction =
   | 'resume'
   | 'not-fit'
   | 'remark'
   | 'agree-resume'
   | 'request-attachment-resume'
+  | 'download-resume'
   | 'history'
   | 'exchange-wechat';
 
 export async function runChatActionOnCurrentConversation(
   page: Page,
-  options: { action: ChatPageAction; remark?: string },
+  options: { action: ChatPageAction; remark?: string; outDir?: string },
 ): Promise<string> {
   const action = options.action;
   switch (action) {
@@ -590,6 +718,8 @@ export async function runChatActionOnCurrentConversation(
       return runIncomingResumeCardAction(page, 'agree');
     case 'request-attachment-resume':
       return runRequestAttachmentResume(page);
+    case 'download-resume':
+      return runDownloadAttachmentResume(page, options.outDir);
     case 'exchange-wechat':
       return runExchangeWechat(page);
     case 'history':

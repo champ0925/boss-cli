@@ -55,6 +55,7 @@ export async function implOpenChatByIndex(params: {
 export async function implChatAction(params: {
   action: ChatPageAction;
   remark?: string;
+  outDir?: string;
 }): Promise<string> {
   return withBossSessionPage(async (page) => runChatActionOnCurrentConversation(page, params));
 }
