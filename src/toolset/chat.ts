@@ -260,6 +260,27 @@ type CandidateSummary = {
   remark: string;
 };
 
+/** 结构化聊天消息（供 --json 输出 / messages 表写入）。 */
+export type BossChatMessage = {
+  time: string;                       // 消息时间（页面原始文本，如 "昨天 16:30" / "12:04"）
+  direction: 'in' | 'out' | 'system'; // in=候选人发来，out=我方发出，system=系统
+  content: string;                    // 消息内容
+};
+
+/** 结构化聊天详情（供 --json 输出 / messages 表写入）。 */
+export type BossChatDetail = {
+  name: string;                       // 候选人姓名
+  job: string;                        // 沟通职位
+  active: string;                     // 活跃状态
+  basicFacts: string[];               // 基本信息（年龄/年限/学历等）
+  expectation: string;                // 期望
+  recentExperience: string[];         // 近期经历
+  remark: string;                     // 备注
+  hasResumeAttachment: boolean;       // 是否有附件简历
+  messages: BossChatMessage[];        // 消息列表
+  scrapedAt: string;                  // 抓取时间 ISO
+};
+
 type ChatMessageSnapshot = {
   messages: Array<{
     time: string;
@@ -884,4 +905,32 @@ export async function runOpenCandidateChat(
     }
     throw new Error(`打开候选人聊天失败：${message}`);
   }
+}
+
+/**
+ * 在当前已打开的候选人聊天页抓取结构化聊天详情（供 --json / messages 表写入）。
+ * 前置：已通过 {@link runOpenCandidateChat} 打开候选人聊天。
+ */
+export async function runGetCurrentChatJson(page: Page, candidateName: string): Promise<BossChatDetail> {
+  const scraped = await scrapeCurrentChatMessages(page);
+  const summary = await fetchCandidateSummary(page, candidateName, true);
+
+  const messages: BossChatMessage[] = scraped.messages.map((m) => ({
+    time: m.time,
+    direction: m.from === 'friend' ? 'in' : m.from === 'myself' ? 'out' : 'system',
+    content: m.text,
+  }));
+
+  return {
+    name: summary.name || candidateName,
+    job: summary.communicationPosition,
+    active: summary.active,
+    basicFacts: summary.basicFacts,
+    expectation: summary.expectation,
+    recentExperience: summary.recentExperience,
+    remark: summary.remark,
+    hasResumeAttachment: scraped.hasFriendResumeAttachment,
+    messages,
+    scrapedAt: new Date().toISOString(),
+  };
 }

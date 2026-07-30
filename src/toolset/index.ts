@@ -2,7 +2,7 @@
 import { runLogin } from './login.js';
 import { runGetCandidateList } from './list.js';
 import { runListOpenPositions } from './jd.js';
-import { runOpenCandidateChat, runOpenCandidateChatByIndex } from './chat.js';
+import { runOpenCandidateChat, runOpenCandidateChatByIndex, runGetCurrentChatJson, type BossChatDetail } from './chat.js';
 import {
   runChatActionOnCurrentConversation,
   type ChatPageAction,
@@ -14,11 +14,18 @@ import { runNormalSearch } from './normal-search.js';
 import { runRecommend } from './recommend.js';
 import { runPreview } from './preview.js';
 import { runRecommendGreet } from './greet.js';
+import { runCheckLoginStatus, type BossLoginStatus } from './status.js';
 export type { ChatPageAction };
+export type { BossChatDetail } from './chat.js';
 export type { DeepSearchGeekItem } from './deep-search.js';
+export type { BossLoginStatus };
 
 export async function implLogin(): Promise<string> {
   return runLogin();
+}
+
+export async function implCheckLoginStatus(): Promise<BossLoginStatus> {
+  return runCheckLoginStatus();
 }
 
 export async function implListCandidates(): Promise<string> {
@@ -34,6 +41,18 @@ export async function implOpenChat(
   exact: boolean,
 ): Promise<string> {
   return withBossSessionPage(async (page) => runOpenCandidateChat(page, candidateName, exact));
+}
+
+/** 打开候选人聊天并返回结构化聊天详情（供 --json / messages 表写入）。 */
+export async function implOpenChatJson(
+  candidateName: string,
+  exact: boolean,
+): Promise<BossChatDetail> {
+  return withBossSessionPage(async (page) => {
+    // 复用现有打开逻辑（输出文本丢弃，只要副作用：打开聊天页）
+    await runOpenCandidateChat(page, candidateName, exact);
+    return runGetCurrentChatJson(page, candidateName);
+  });
 }
 
 export async function implOpenChatByIndex(params: {

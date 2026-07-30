@@ -7,6 +7,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { detachBrowserSession } from '../browser/index.js';
 import {
   implChatAction,
+  implCheckLoginStatus,
   implLogin,
   implListCandidates,
   implListUnreadCandidates,
@@ -15,6 +16,7 @@ import {
   implListPositionsWithOptions,
   implNormalSearch,
   implOpenChat,
+  implOpenChatJson,
   implRecommend,
   implPreview,
   implRecommendGreet,
@@ -143,10 +145,15 @@ function printHelp(): void {
       使用 npm 安装最新版 boss-cli
   boss login
       打开登录页（需要用户在浏览器中自行完成登录，这个命令会直接返回）
+  boss status
+      主动检查登录态，输出结构化 JSON：{"ok":true,"needLogin":false,"loggedIn":true,"account":"...","currentUrl":"...",...}
+      登录失效时不报错，返回 {"ok":true,"needLogin":true,"loggedIn":false,...}；浏览器未启动等异常返回 {"ok":false,"needLogin":true,"error":"..."}
+      供 Worker 健康检查 / login_check 动作使用
   boss list [--unread]
       读取「全部」聊天列表候选人；--unread 仅显示未读（角标>0）
-  boss chat <姓名> [--strict]
+  boss chat <姓名> [--strict] [--json]
       打开指定联系人会话；默认包含匹配，--strict 为精确匹配
+      --json 输出结构化聊天详情（姓名/职位/消息数组等），供 messages 表写入，而非人类可读文本
   boss chat [姓名] --index <序号> [--unread] [--strict]
       按 boss list 输出的 1-based 序号打开会话；--unread 表示序号对应 boss list --unread
       同时提供姓名时会校验该序号候选人姓名，--strict 表示精确校验
@@ -392,6 +399,15 @@ export async function executeCommand(argv: string[]): Promise<string> {
     return implLogin();
   }
 
+  if (cmd === 'status') {
+    const { rest, opts, flags } = parseOpts(tail);
+    if (rest.length > 0 || Object.keys(opts).length > 0 || flags.size > 0) {
+      die('❌ 用法: status（无参数，输出登录态 JSON）');
+    }
+    const status = await implCheckLoginStatus();
+    return JSON.stringify(status, null, 2);
+  }
+
   if (cmd === 'update') {
     const { rest, opts, flags } = parseOpts(tail);
     if (rest.length > 0 || Object.keys(opts).length > 0 || flags.size > 0) {
@@ -438,7 +454,12 @@ export async function executeCommand(argv: string[]): Promise<string> {
       die('❌ chat 只有配合 --index 时才支持 --unread。用法: chat --index <序号> --unread');
     }
     if (!nameArg) {
-      die('❌ 用法: chat <姓名> [--strict]；或 chat [姓名] --index <序号> [--unread]');
+      die('❌ 用法: chat <姓名> [--strict] [--json]；或 chat [姓名] --index <序号> [--unread]');
+    }
+    // --json：输出结构化聊天详情（供 messages 表写入），而非人类可读文本
+    if (flags.has('json')) {
+      const detail = await implOpenChatJson(nameArg, exact);
+      return JSON.stringify(detail, null, 2);
     }
     return implOpenChat(nameArg, exact);
   }
