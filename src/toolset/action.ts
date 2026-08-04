@@ -498,13 +498,21 @@ async function runIncomingResumeCardAction(page: Page, which: IncomingCardBtn): 
     : '已点击「拒绝」，拒绝接收对方附件简历。';
 }
 
-async function getCandidateLabelForResumeShot(page: Page): Promise<string> {
-  const name = (await page.evaluate(`(() => {
-    const node = document.querySelector(".base-info-single-container .name-box");
-    const text = node?.textContent ?? "";
-    return text.replace(/\\s+/g, " ").trim();
-  })()`)) as string;
-  return name || 'candidate';
+async function getCandidateInfoForResumeShot(page: Page): Promise<{ name: string; job: string }> {
+  const info = (await page.evaluate(`(() => {
+    const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
+    const name = norm(document.querySelector(".base-info-single-container .name-box")?.textContent);
+    const job = norm(document.querySelector(".position-item .position-name")?.textContent);
+    return { name, job };
+  })()`)) as { name: string; job: string };
+  return { name: info.name || 'candidate', job: info.job || '' };
+}
+
+/** 简历文件名片段：岗位-姓名（岗位缺省时只姓名），均已做文件名安全处理 */
+function buildResumeNamePart(info: { name: string; job: string }): string {
+  const name = safeResumeScreenshotFileBase(info.name);
+  const job = info.job.trim() ? `${safeResumeScreenshotFileBase(info.job)}-` : '';
+  return `${job}${name}`;
 }
 
 /**
@@ -513,7 +521,7 @@ async function getCandidateLabelForResumeShot(page: Page): Promise<string> {
  *
  * 进入前记录视口（`snapshotBossPageViewport`，见 {@link captureCResumeIframeToFile}）。
  */
-async function captureOnlineResumeScreenshot(page: Page, candidateLabel: string): Promise<string | null> {
+async function captureOnlineResumeScreenshot(page: Page, candidateInfo: { name: string; job: string }): Promise<string | null> {
   ensureAppDataLayout();
 
   const savedViewport = await snapshotBossPageViewport(page);
@@ -545,7 +553,7 @@ async function captureOnlineResumeScreenshot(page: Page, candidateLabel: string)
     return null;
   }
 
-  const fileName = `BOSS-在线简历-${safeResumeScreenshotFileBase(candidateLabel)}-${formatFileTimestamp(new Date())}.png`;
+  const fileName = `BOSS-在线简历-${buildResumeNamePart(candidateInfo)}-${formatFileTimestamp(new Date())}.png`;
   const absPath = join(RESUME_SCREENSHOTS_DIR, fileName);
 
   const ok = await captureCResumeIframeToFile(page, savedViewport, absPath);
@@ -668,14 +676,14 @@ export async function runDownloadAttachmentResume(page: Page, outDir?: string): 
   })()`).catch(() => undefined);
 
   // 6) 写盘
-  const candidateLabel = await getCandidateLabelForResumeShot(page);
+  const candidateInfo = await getCandidateInfoForResumeShot(page);
   const ext = result.contentType.includes('pdf')
     ? '.pdf'
     : result.contentType.includes('word') || result.contentType.includes('officedocument')
       ? '.docx'
       : '.bin';
-  // 文件名统一为：BOSS-附件简历-姓名-时间.ext（与在线简历截图命名规则对齐）
-  const fileName = `BOSS-附件简历-${safeResumeScreenshotFileBase(candidateLabel)}-${formatFileTimestamp(new Date())}${ext}`;
+  // 文件名统一为：BOSS-附件简历-岗位-姓名-时间.ext（与在线简历截图命名规则对齐）
+  const fileName = `BOSS-附件简历-${buildResumeNamePart(candidateInfo)}-${formatFileTimestamp(new Date())}${ext}`;
   const dir = outDir?.trim() || RESUME_ATTACHMENTS_DIR;
   const absPath = join(dir, fileName);
   await writeFile(absPath, Buffer.from(result.base64, 'base64'));
@@ -705,8 +713,8 @@ export async function runChatActionOnCurrentConversation(
       return updateCandidateRemark(page, options.remark ?? '');
     case 'resume': {
       await ensureInCandidateChat(page, '在线简历');
-      const candidateLabel = await getCandidateLabelForResumeShot(page);
-      const resumeShotPath = await captureOnlineResumeScreenshot(page, candidateLabel);
+      const candidateInfo = await getCandidateInfoForResumeShot(page);
+      const resumeShotPath = await captureOnlineResumeScreenshot(page, candidateInfo);
       if (resumeShotPath === null) {
         throw new Error('未找到在线简历入口，或在线简历弹层未正常出现。');
       }

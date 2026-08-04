@@ -46,14 +46,20 @@ function formatFileTimestamp(d: Date): string {
 }
 
 /**
- * 生成简历截图文件名：BOSS-在线简历-姓名-岗位-时间.png
- * 岗位名从环境变量 BOSS_RESUME_JOB_TITLE 读（批量脚本调用时注入）；没有则省略。
+ * 生成简历截图文件名：BOSS-在线简历-岗位-姓名-时间.png
+ * 岗位优先用传入的 jobTitle（页面读取），缺省时回退环境变量 BOSS_RESUME_JOB_TITLE（批量脚本注入）。
  */
-function buildResumeScreenshotFileName(candidateName: string): string {
+function buildResumeScreenshotFileName(candidateName: string, jobTitle?: string): string {
   const name = safeResumeScreenshotFileBase(candidateName);
-  const jobTitle = (process.env.BOSS_RESUME_JOB_TITLE ?? '').trim();
-  const jobPart = jobTitle ? `-${safeResumeScreenshotFileBase(jobTitle)}` : '';
-  return `BOSS-在线简历-${name}${jobPart}-${formatFileTimestamp(new Date())}.png`;
+  const job = (jobTitle ?? process.env.BOSS_RESUME_JOB_TITLE ?? '').trim();
+  const jobPart = job ? `${safeResumeScreenshotFileBase(job)}-` : '';
+  return `BOSS-在线简历-${jobPart}${name}-${formatFileTimestamp(new Date())}.png`;
+}
+
+/** 从「当前岗位：xxx」提取岗位名；推荐列表无具体岗位时返回空 */
+function extractJobFromLine(jobLine: string): string {
+  const m = jobLine.replace(/^当前岗位：/, '').trim();
+  return m === '当前推荐列表' ? '' : m;
 }
 
 export async function runPreview(options: PreviewOptions): Promise<string> {
@@ -109,7 +115,7 @@ export async function runPreview(options: PreviewOptions): Promise<string> {
         throw new Error('在线简历未加载完成（可能加载失败或被限流），已跳过未截图。');
       }
       ensureAppDataLayout();
-      const fileName = buildResumeScreenshotFileName(target);
+      const fileName = buildResumeScreenshotFileName(target, extractJobFromLine(jobLine));
       const absPath = join(RESUME_SCREENSHOTS_DIR, fileName);
 
       const ok = await captureCResumeIframeToFile(page, savedOriginal, absPath);
