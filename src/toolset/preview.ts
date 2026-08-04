@@ -46,14 +46,14 @@ function formatFileTimestamp(d: Date): string {
 }
 
 /**
- * 生成简历截图文件名：在线简历-姓名-岗位-时间.png
+ * 生成简历截图文件名：BOSS-在线简历-姓名-岗位-时间.png
  * 岗位名从环境变量 BOSS_RESUME_JOB_TITLE 读（批量脚本调用时注入）；没有则省略。
  */
 function buildResumeScreenshotFileName(candidateName: string): string {
   const name = safeResumeScreenshotFileBase(candidateName);
   const jobTitle = (process.env.BOSS_RESUME_JOB_TITLE ?? '').trim();
   const jobPart = jobTitle ? `-${safeResumeScreenshotFileBase(jobTitle)}` : '';
-  return `在线简历-${name}${jobPart}-${formatFileTimestamp(new Date())}.png`;
+  return `BOSS-在线简历-${name}${jobPart}-${formatFileTimestamp(new Date())}.png`;
 }
 
 export async function runPreview(options: PreviewOptions): Promise<string> {
