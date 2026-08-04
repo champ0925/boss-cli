@@ -1,7 +1,8 @@
 // 配置文件 — 应用数据位于 ~/.boss-cli/.cache/
 
 import { existsSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import { homedir } from 'os';
 
 /**
@@ -39,31 +40,52 @@ function resumeDateDir(): string {
 }
 
 /**
+ * 工作区根目录（AI-Hiring/）。从 dist/config.js 位置反推：dist/ → boss-cli/ → 工作区根。
+ * 反推失败（目录结构不符）时回退 process.cwd()。
+ */
+function workspaceRoot(): string {
+  try {
+    // ESM 无 __dirname，用 import.meta.url 取当前文件位置
+    // dist/config.js → boss-cli/ → AI-Hiring/
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkgRoot = join(here, '..');
+    const parent = dirname(pkgRoot);
+    // 校验：pkgRoot 应该是 boss-cli/（含 package.json）
+    if (existsSync(join(pkgRoot, 'package.json'))) {
+      return parent;
+    }
+  } catch { /* ignore */ }
+  return process.cwd();
+}
+
+const RESUME_ROOT = join(workspaceRoot(), 'resumes', resumeDateDir());
+
+/**
  * `chat`/`preview` 抓取在线简历时对 iframe 区域截图保存目录。
  * 优先使用环境变量 `BOSS_RESUME_SCREENSHOTS_DIR`（绝对路径，不再追加日期目录），
- * 未设置时默认存到当前工作目录下的 `resumes/<日期>/screenshots/`（即项目内按天分目录）。
+ * 未设置时默认存到工作区根的 `resumes/<日期>/screenshots/`（与 liepin-cli 对齐）。
  */
 export const RESUME_SCREENSHOTS_DIR =
   process.env.BOSS_RESUME_SCREENSHOTS_DIR?.trim() ||
-  join(process.cwd(), 'resumes', resumeDateDir(), 'screenshots');
+  join(RESUME_ROOT, 'screenshots');
 
 /**
  * 在线简历截图经 OCR 后的纯文本保存目录（与截图同名 `.txt`）。
  * 优先使用环境变量 `BOSS_RESUME_OCR_DIR`（绝对路径，不再追加日期目录），
- * 未设置时默认存到当前工作目录下的 `resumes/<日期>/ocr/`（即项目内按天分目录）。
+ * 未设置时默认存到工作区根的 `resumes/<日期>/ocr/`（与 liepin-cli 对齐）。
  */
 export const RESUME_OCR_DIR =
   process.env.BOSS_RESUME_OCR_DIR?.trim() ||
-  join(process.cwd(), 'resumes', resumeDateDir(), 'ocr');
+  join(RESUME_ROOT, 'ocr');
 
 /**
  * 聊天中「附件简历」下载保存目录。
  * 优先使用环境变量 `BOSS_RESUME_ATTACHMENTS_DIR`（绝对路径，不再追加日期目录），
- * 未设置时默认存到当前工作目录下的 `resumes/<日期>/attachments/`（即项目内按天分目录）。
+ * 未设置时默认存到工作区根的 `resumes/<日期>/attachments/`（与 liepin-cli 对齐）。
  */
 export const RESUME_ATTACHMENTS_DIR =
   process.env.BOSS_RESUME_ATTACHMENTS_DIR?.trim() ||
-  join(process.cwd(), 'resumes', resumeDateDir(), 'attachments');
+  join(RESUME_ROOT, 'attachments');
 
 let appDataLayoutReady = false;
 
