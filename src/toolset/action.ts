@@ -23,6 +23,12 @@ import { ensureAppDataLayout, RESUME_ATTACHMENTS_DIR, RESUME_SCREENSHOTS_DIR } f
 import { isResumeOcrEnabled, ocrResumePngToTextFile } from '../ocr/index.js';
 import { runGetCommunicationHistory } from './chat.js';
 
+/** 文件名时间戳：2026-08-04 17-08-09（与 preview.ts 在线简历截图命名对齐） */
+function formatFileTimestamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+
 type IncomingCardBtn = 'agree' | 'refuse';
 
 function ensureInCandidateChat(page: Page, actionLabel: string): Promise<void> {
@@ -539,7 +545,7 @@ async function captureOnlineResumeScreenshot(page: Page, candidateLabel: string)
     return null;
   }
 
-  const fileName = `online-resume-${safeResumeScreenshotFileBase(candidateLabel)}-${Date.now()}.png`;
+  const fileName = `BOSS-在线简历-${safeResumeScreenshotFileBase(candidateLabel)}-${formatFileTimestamp(new Date())}.png`;
   const absPath = join(RESUME_SCREENSHOTS_DIR, fileName);
 
   const ok = await captureCResumeIframeToFile(page, savedViewport, absPath);
@@ -668,7 +674,8 @@ export async function runDownloadAttachmentResume(page: Page, outDir?: string): 
     : result.contentType.includes('word') || result.contentType.includes('officedocument')
       ? '.docx'
       : '.bin';
-  const fileName = `${safeResumeScreenshotFileBase(candidateLabel)}-attachment-${Date.now()}${ext}`;
+  // 文件名统一为：BOSS-附件简历-姓名-时间.ext（与在线简历截图命名规则对齐）
+  const fileName = `BOSS-附件简历-${safeResumeScreenshotFileBase(candidateLabel)}-${formatFileTimestamp(new Date())}${ext}`;
   const dir = outDir?.trim() || RESUME_ATTACHMENTS_DIR;
   const absPath = join(dir, fileName);
   await writeFile(absPath, Buffer.from(result.base64, 'base64'));
