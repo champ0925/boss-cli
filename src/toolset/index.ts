@@ -40,6 +40,10 @@ export async function implListResumeCandidates(): Promise<string> {
   return runGetCandidateList({ resumeOnly: true });
 }
 
+export async function implListCandidatesByCategory(category: string): Promise<string> {
+  return runGetCandidateList({ category });
+}
+
 export async function implOpenChat(
   candidateName: string,
   exact: boolean,

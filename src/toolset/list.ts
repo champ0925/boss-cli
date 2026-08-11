@@ -119,7 +119,14 @@ async function waitForChatFilterTabSelected(page: Page, label: string): Promise<
   );
 }
 
-export type ChatListFilter = 'all' | 'unread' | 'resume';
+export type ChatListFilter = 'all' | 'unread' | 'resume' | string;
+
+// 内置快捷分类与页面文案的映射
+const FILTER_LABELS: Record<string, string> = {
+  all: '全部',
+  unread: '未读',
+  resume: '已获取简历',
+};
 
 export async function ensureChatListReady(
   page: Page,
@@ -141,7 +148,8 @@ export async function ensureChatListReady(
     { timeout: 15_000 },
   );
 
-  const filterLabel = filter === 'unread' ? '未读' : filter === 'resume' ? '已获取简历' : '全部';
+  // 已知快捷名查映射表；其余直接当页面文案用（如 沟通中/已约面/已交换电话/已交换微信/收藏）
+  const filterLabel = FILTER_LABELS[filter] ?? filter;
   await clickChatFilterTab(page, filterLabel);
   await sleepRandom(LIST_FILTER_GAP_MS.min, LIST_FILTER_GAP_MS.max);
   await waitForChatFilterTabSelected(page, filterLabel);
@@ -154,11 +162,14 @@ export async function ensureChatListReady(
 }
 
 export async function runGetCandidateList(
-  opts: { unreadOnly?: boolean; resumeOnly?: boolean } = {},
+  opts: { unreadOnly?: boolean; resumeOnly?: boolean; category?: string } = {},
 ): Promise<string> {
   const unreadOnly = opts.unreadOnly === true;
   const resumeOnly = opts.resumeOnly === true;
-  const filter: ChatListFilter = unreadOnly ? 'unread' : resumeOnly ? 'resume' : 'all';
+  const category = (opts.category ?? '').trim();
+  const filter: ChatListFilter =
+    unreadOnly ? 'unread' : resumeOnly ? 'resume' : category || 'all';
+  const filterLabel = FILTER_LABELS[filter] ?? filter;
 
   try {
     return await withBossSessionPage(async (page) => {
@@ -200,11 +211,9 @@ export async function runGetCandidateList(
         lines.length > 0 ? `候选人明细：\n${lines.join('\n')}` : '候选人明细：暂无。';
 
       const head =
-        unreadOnly
-          ? `未读筛选：共 ${candidates.length} 人（已切换页面「未读」筛选）。`
-          : resumeOnly
-            ? `已获取简历筛选：共 ${candidates.length} 人（已切换页面「已获取简历」分类）。`
-            : `沟通列表共 ${candidates.length} 人，其中 ${withUnread} 人有未读消息。`;
+        filter === 'all'
+          ? `沟通列表共 ${candidates.length} 人，其中 ${withUnread} 人有未读消息。`
+          : `${filterLabel}筛选：共 ${candidates.length} 人（已切换页面「${filterLabel}」分类）。`;
 
       return [head, previewText].filter(Boolean).join('\n');
     });
