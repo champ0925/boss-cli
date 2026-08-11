@@ -263,7 +263,7 @@ export async function runRequestAttachmentResume(page: Page): Promise<string> {
       for (const tip of tips) {
         if (!isVisible(tip)) continue;
         const raw = (tip.textContent ?? "").replace(/\\s+/g, "");
-        if (!raw.includes("索取简历")) continue;
+        if (!raw.includes("索取简历") && !raw.includes("请求简历")) continue;
         const primary = tip.querySelector(".btn-box .boss-btn-primary");
         return primary instanceof HTMLElement;
       }
@@ -286,7 +286,7 @@ export async function runRequestAttachmentResume(page: Page): Promise<string> {
     const tips = Array.from(document.querySelectorAll(".exchange-tooltip"));
     for (const tip of tips) {
       if (!isVisible(tip)) continue;
-      if (!norm(tip.textContent).includes("索取简历")) continue;
+      if (!norm(tip.textContent).includes("索取简历") && !norm(tip.textContent).includes("请求简历")) continue;
       const primary = tip.querySelector(".btn-box .boss-btn-primary.boss-btn, .btn-box .boss-btn-primary");
       if (!(primary instanceof HTMLElement)) continue;
       if (!norm(primary.textContent).includes("确定")) continue;

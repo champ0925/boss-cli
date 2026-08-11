@@ -36,6 +36,10 @@ export async function implListUnreadCandidates(): Promise<string> {
   return runGetCandidateList({ unreadOnly: true });
 }
 
+export async function implListResumeCandidates(): Promise<string> {
+  return runGetCandidateList({ resumeOnly: true });
+}
+
 export async function implOpenChat(
   candidateName: string,
   exact: boolean,

@@ -11,6 +11,7 @@ import {
   implLogin,
   implListCandidates,
   implListUnreadCandidates,
+  implListResumeCandidates,
   implOpenChatByIndex,
   implListPositions,
   implListPositionsWithOptions,
@@ -149,8 +150,8 @@ function printHelp(): void {
       主动检查登录态，输出结构化 JSON：{"ok":true,"needLogin":false,"loggedIn":true,"account":"...","currentUrl":"...",...}
       登录失效时不报错，返回 {"ok":true,"needLogin":true,"loggedIn":false,...}；浏览器未启动等异常返回 {"ok":false,"needLogin":true,"error":"..."}
       供 Worker 健康检查 / login_check 动作使用
-  boss list [--unread]
-      读取「全部」聊天列表候选人；--unread 仅显示未读（角标>0）
+  boss list [--unread] [--resume]
+      读取聊天列表候选人；--unread 仅显示未读（角标>0）；--resume 切换「已获取简历」分类（平台准确分类）
   boss chat <姓名> [--strict] [--json]
       打开指定联系人会话；默认包含匹配，--strict 为精确匹配
       --json 输出结构化聊天详情（姓名/职位/消息数组等），供 messages 表写入，而非人类可读文本
@@ -418,6 +419,12 @@ export async function executeCommand(argv: string[]): Promise<string> {
 
   if (cmd === 'list') {
     const { flags } = parseOpts(tail);
+    if (flags.has('unread') && flags.has('resume')) {
+      die('❌ --unread 和 --resume 不能同时使用。');
+    }
+    if (flags.has('resume')) {
+      return implListResumeCandidates();
+    }
     if (flags.has('unread')) {
       return implListUnreadCandidates();
     }
