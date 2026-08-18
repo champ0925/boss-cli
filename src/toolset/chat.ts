@@ -587,6 +587,39 @@ export async function runOpenCandidateChat(
       throw new Error('当前不在沟通列表页（/web/chat/index），无法打开候选人聊天。');
     }
 
+    // 如果当前已打开的目标聊天就是目标候选人，直接复用，不再重复点击列表
+    const alreadyOpen = (await page.evaluate(`(() => {
+      const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
+      const targetName = ${JSON.stringify(targetName)};
+      const exactMatch = ${JSON.stringify(exact)};
+      const matches = (value) => exactMatch ? value === targetName : value.includes(targetName);
+      const isVisible = (el) => {
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const root = Array.from(document.querySelectorAll(".base-info-single-container")).find(isVisible);
+      const detailName = norm(root?.querySelector(".name-box")?.textContent);
+      return matches(detailName);
+    })()`)) as boolean;
+
+    if (alreadyOpen) {
+      return renderOpenedCandidateChat(page, targetName);
+    }
+
+    // 聊天页 DOM 可能因消息实时更新而卡住，先刷新页面确保点击有效
+    const chatListHasItems = (await page.evaluate(`(() => {
+      const list = document.querySelector(".chat-message-list");
+      if (!list) return false;
+      const items = list.querySelectorAll(".message-item");
+      return items && items.length > 0;
+    })()`)) as boolean;
+    if (!chatListHasItems) {
+      await page.reload({ waitUntil: 'load', timeout: 60_000 });
+      await ensureChatListReady(page);
+    }
+
     const norm = (v: string | null | undefined) => (v ?? '').replace(/\s+/g, ' ').trim();
     const matcher = (value: string) =>
       exact ? value === targetName : value.includes(targetName);
@@ -645,6 +678,7 @@ export async function runOpenCandidateChat(
       throw new Error(`未在聊天列表中找到候选人：${targetName}`);
     }
 
+    // 找到目标候选人后，先滚动到可见区域，再获取坐标点击
     const clickNameLiteral = JSON.stringify(foundName || targetName);
     const clickExactLiteral = JSON.stringify(exact);
     const scrolledToTarget = (await page.evaluate(`(() => {
@@ -703,7 +737,60 @@ export async function runOpenCandidateChat(
     }
     await page.mouse.click(clickPoint.x, clickPoint.y, { delay: 40 });
 
+    // 点击后如果页面进入「右侧空白」异常状态（selected 已切换但详情面板未渲染），
+    // 等待一小段时间后自动刷新页面恢复
     await sleepRandom(OPEN_CHAT_AFTER_ROW_CLICK_MS.min, OPEN_CHAT_AFTER_ROW_CLICK_MS.max);
+
+    // 检测是否进入异常状态：selected 已切换但详情面板不存在或不可见
+    const needRefresh = (await page.evaluate(`(() => {
+      const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
+      const isVisible = (el) => {
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const selected = document.querySelector(".geek-item.selected");
+      const selectedName = norm(selected?.querySelector(".geek-name")?.textContent);
+      const detail = document.querySelector(".base-info-single-container");
+      const detailVisible = isVisible(detail);
+      // 如果 selected 有名字但详情面板不可见，说明页面卡住了
+      return selectedName && !detailVisible;
+    })()`)) as boolean;
+
+    if (needRefresh) {
+      await page.reload({ waitUntil: 'load', timeout: 60_000 });
+      await ensureChatListReady(page);
+      // 刷新后重新打开目标聊天
+      await page.evaluate(`(() => {
+        const targetName = ${clickNameLiteral};
+        const exactMatch = ${clickExactLiteral};
+        const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
+        const matches = (value) => exactMatch ? value === targetName : value.includes(targetName);
+        const wraps = Array.from(document.querySelectorAll(".geek-item-wrap"));
+        const wrap = wraps.find((el) => matches(norm(el.querySelector(".geek-name")?.textContent)));
+        if (!wrap) return;
+        const row = wrap.querySelector(".geek-item") || wrap;
+        row.scrollIntoView({ behavior: "instant", block: "center", inline: "nearest" });
+      })()`);
+      await sleepRandom(120, 220);
+      const retryPoint = (await page.evaluate(`(() => {
+        const targetName = ${clickNameLiteral};
+        const exactMatch = ${clickExactLiteral};
+        const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
+        const matches = (value) => exactMatch ? value === targetName : value.includes(targetName);
+        const wraps = Array.from(document.querySelectorAll(".geek-item-wrap"));
+        const wrap = wraps.find((el) => matches(norm(el.querySelector(".geek-name")?.textContent)));
+        if (!wrap) return null;
+        const row = wrap.querySelector(".geek-item") || wrap;
+        const rect = row.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      })()`)) as { x: number; y: number } | null;
+      if (retryPoint) {
+        await page.mouse.click(retryPoint.x, retryPoint.y, { delay: 40 });
+        await sleepRandom(OPEN_CHAT_AFTER_ROW_CLICK_MS.min, OPEN_CHAT_AFTER_ROW_CLICK_MS.max);
+      }
+    }
 
     try {
       const expectedNameLiteral = JSON.stringify(foundName || targetName);
