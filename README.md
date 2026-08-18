@@ -63,12 +63,14 @@ boss help
 | 命令 | 说明 |
 | --- | --- |
 | `boss login` | 打开 Boss直聘登录页（扫码/验证后手动完成） |
+| `boss status` | 输出登录态 JSON（无参即 JSON；**不要**加 `--json`） |
 | `boss update` | 通过 npm 安装最新版 boss-cli |
-| `boss list [--unread]` | 读取聊天列表；`--unread` 仅未读 |
-| `boss chat <姓名> [--strict]` | 打开指定候选人会话 |
-| `boss chat [姓名] --index <序号> [--unread] [--strict]` | 按 `boss list` 输出序号打开会话；同名候选人建议用序号 |
-| `boss send [--text <内容>]` | 向当前会话发送消息 |
-| `boss action <操作>` | 索要简历 / 不合适 / 备注 / 交换微信等 |
+| `boss list [--unread] [--resume] [--category <分类>]` | 聊天列表；未读 / 已获取简历 / 任意分类 |
+| `boss chat <姓名> [--strict] [--json]` | 打开会话；`--json` 输出结构化聊天记录（Worker 用） |
+| `boss chat [姓名] --index <序号> [--unread] [--strict]` | 按 `boss list` 序号打开；同名候选人建议用序号 |
+| `boss send [--text <内容>] [--request-resume]` | 向当前会话发送消息；可选发送后求简历 |
+| `boss action <操作>` | `resume` / `agree-resume` / `download-resume` / `request-attachment-resume` / `not-fit` / `remark` / `wechat` 等 |
+| `boss action download-resume` | 下载当前会话已同意的附件简历 |
 | `boss recommend [岗位关键字]` | 读取推荐候选人列表 |
 | `boss search [关键词]` | 常规搜索牛人列表 |
 | `boss greet <姓名> [--job <岗位>]` | 在当前推荐/深度搜索页对候选人打招呼（不会自动跳转） |
