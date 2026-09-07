@@ -8,6 +8,7 @@ import {
 } from '../browser/index.js';
 import { isBossChatIndexUrl } from '../common/auth.js';
 import { ensureChatListReady } from './list.js';
+import { scrollChatListOnce } from './chat-scroll.js';
 
 type ChatFrom = 'friend' | 'myself' | 'system' | 'unknown';
 
@@ -643,32 +644,8 @@ export async function runOpenCandidateChat(
       }
       if (targetWrap) break;
 
-      const scrollState = (await page.evaluate(`(() => {
-        const first = document.querySelector(".geek-item-wrap");
-        if (!first) return { moved: false, atEnd: true };
-        let node = first.parentElement;
-        let scroller = null;
-        while (node) {
-          const style = window.getComputedStyle(node);
-          const overflowY = style.overflowY;
-          const canScroll =
-            (overflowY === "auto" || overflowY === "scroll") &&
-            node.scrollHeight > node.clientHeight;
-          if (canScroll) {
-            scroller = node;
-            break;
-          }
-          node = node.parentElement;
-        }
-        if (!scroller) return { moved: false, atEnd: true };
-        const prev = scroller.scrollTop;
-        const step = Math.max(160, Math.floor(scroller.clientHeight * 0.8));
-        scroller.scrollTop = Math.min(scroller.scrollTop + step, scroller.scrollHeight);
-        const moved = scroller.scrollTop !== prev;
-        const atEnd = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
-        return { moved, atEnd };
-      })()`)) as { moved: boolean; atEnd: boolean };
-      if (!scrollState.moved || scrollState.atEnd) {
+      const moved = await scrollChatListOnce(page);
+      if (!moved) {
         break;
       }
       await sleepRandom(OPEN_CHAT_SCROLL_GAP_MS.min, OPEN_CHAT_SCROLL_GAP_MS.max);
