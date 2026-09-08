@@ -8,6 +8,7 @@ export type BossChatIdentity = {
   encryptJobId: string;
   securityId: string;
   name: string;
+  jobName: string;
 };
 
 export function parseBossChatUniqueId(uniqueId: string): {
@@ -22,12 +23,18 @@ export function parseBossChatUniqueId(uniqueId: string): {
   };
 }
 
+export type BossFriendRow = {
+  friendId: number;
+  friendSource: number;
+  name: string;
+  updateTime: number;
+};
+
 /**
- * 全量好友 uniqueId 集合（filterByLabel labelId=0，即沟通列表全部分类的好友）。
- * 用途：打招呼前后各取一次做差集，唯一新增项就是刚建立沟通的人（geekId → friendId 映射）。
+ * 全量好友列表（filterByLabel labelId=0，即沟通列表全部分类的好友）。
  * 与页面列表请求保持一致：表单编码 POST，labelId=0&encJobId=&sort=&scene=0。
  */
-export async function fetchBossAllFriendUniqueIds(page: Page): Promise<Set<string>> {
+export async function fetchBossAllFriends(page: Page): Promise<BossFriendRow[]> {
   const result = (await page.evaluate(`(async () => {
     const response = await fetch("/wapi/zprelation/friend/filterByLabel", {
       method: "POST",
@@ -54,13 +61,39 @@ export async function fetchBossAllFriendUniqueIds(page: Page): Promise<Set<strin
     throw new Error(data.message || data.msg || `BOSS 好友列表接口失败（code=${data.code}）`);
   }
   const rows = Array.isArray(data?.zpData?.result) ? data.zpData.result : [];
-  const ids = new Set<string>();
-  for (const row of rows) {
-    const friendId = Number(row?.friendId ?? 0);
-    const friendSource = Number(row?.friendSource ?? 0);
-    if (friendId > 0) ids.add(`${friendId}-${friendSource}`);
+  return rows
+    .map((row: any): BossFriendRow | null => {
+      const friendId = Number(row?.friendId ?? 0);
+      if (!friendId) return null;
+      return {
+        friendId,
+        friendSource: Number(row?.friendSource ?? 0),
+        name: String(row?.name ?? '').trim(),
+        updateTime: Number(row?.updateTime ?? 0),
+      };
+    })
+    .filter((row: BossFriendRow | null): row is BossFriendRow => row !== null);
+}
+
+/**
+ * 全量好友 uniqueId 集合。
+ * 用途：打招呼前后各取一次做差集，唯一新增项就是刚建立沟通的人（geekId → friendId 映射）。
+ */
+export async function fetchBossAllFriendUniqueIds(page: Page): Promise<Set<string>> {
+  const rows = await fetchBossAllFriends(page);
+  return new Set(rows.map((row) => `${row.friendId}-${row.friendSource}`));
+}
+
+/** 全量好友 + 身份富化（岗位/encryptUid/securityId），供离线回填与诊断（分批 100 调用详情接口）。 */
+export async function fetchBossAllFriendsEnriched(page: Page): Promise<BossChatIdentity[]> {
+  const rows = await fetchBossAllFriends(page);
+  const uniqueIds = rows.map((row) => `${row.friendId}-${row.friendSource}`);
+  const result: BossChatIdentity[] = [];
+  for (let start = 0; start < uniqueIds.length; start += 100) {
+    const identities = await fetchBossChatIdentities(page, uniqueIds.slice(start, start + 100));
+    result.push(...identities);
   }
-  return ids;
+  return result;
 }
 
 /**
@@ -126,6 +159,7 @@ export async function fetchBossChatIdentities(
         encryptJobId: String(row.encryptJobId ?? '').trim(),
         securityId: String(row.securityId ?? '').trim(),
         name: String(row.name ?? '').trim(),
+        jobName: String(row.jobName ?? row.job?.jobName ?? '').trim(),
       };
     })
     .filter((item: BossChatIdentity | null): item is BossChatIdentity => item !== null);

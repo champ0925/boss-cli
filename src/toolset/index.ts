@@ -14,9 +14,11 @@ import { runNormalSearch } from './normal-search.js';
 import { runRecommend, runRecommendJson, type RecommendFilterOptions } from './recommend.js';
 import { runPreview } from './preview.js';
 import { runRecommendGreet } from './greet.js';
+import { fetchBossAllFriendsEnriched } from './chat-identity.js';
 import { runCheckLoginStatus, type BossLoginStatus } from './status.js';
 export type { ChatPageAction };
 export type { BossChatDetail } from './chat.js';
+export type { BossChatIdentity } from './chat-identity.js';
 export type { DeepSearchGeekItem } from './deep-search.js';
 export type { BossLoginStatus };
 
@@ -50,6 +52,14 @@ export async function implListCandidatesJson(opts: {
   category?: string;
 } = {}): Promise<string> {
   return JSON.stringify(await runGetCandidateListJson(opts), null, 2);
+}
+
+/** 全量好友身份（filterByLabel 全部分类 + 详情富化），供离线回填与诊断。 */
+export async function implListFriendsJson(): Promise<string> {
+  return withBossSessionPage(async (page) => {
+    const friends = await fetchBossAllFriendsEnriched(page);
+    return JSON.stringify(friends, null, 2);
+  });
 }
 
 export async function implOpenChat(

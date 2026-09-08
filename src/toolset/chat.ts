@@ -1169,6 +1169,7 @@ async function resolveChatIdentityForJson(
     encryptJobId: enriched?.encryptJobId ?? '',
     securityId: enriched?.securityId ?? '',
     name: enriched?.name ?? candidateName,
+    jobName: enriched?.jobName ?? '',
   };
 }
 

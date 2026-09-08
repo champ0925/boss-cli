@@ -11,6 +11,7 @@ import {
   implLogin,
   implListCandidates,
   implListCandidatesJson,
+  implListFriendsJson,
   implListUnreadCandidates,
   implListResumeCandidates,
   implListCandidatesByCategory,
@@ -157,6 +158,9 @@ function printHelp(): void {
   boss list [--unread] [--resume] [--category <分类名>]
       读取聊天列表候选人；--unread 仅显示未读（角标>0）；--resume 切换「已获取简历」分类（平台准确分类）
       --category 切换任意分类，如 沟通中/已约面/已交换电话/已交换微信/收藏/新招呼（按页面显示文案匹配）
+  boss friends --json
+      输出全量好友身份（filterByLabel 全部分类 + 详情富化：friendId/uniqueId/encryptUid/securityId/姓名/岗位）
+      供离线回填历史数据、诊断身份映射；只读，不打开任何会话
   boss chat <姓名> [--strict] [--json] [--uid <encryptUid|uniqueId|friendId>]
       打开指定联系人会话；默认包含匹配，--strict 为精确匹配
       --uid 支持 encryptUid（会轮换，经身份接口解析）/ uniqueId（friendId-source，按 data-id 精确匹配）/ friendId（按 data-id 前缀匹配）
@@ -455,6 +459,17 @@ export async function executeCommand(argv: string[]): Promise<string> {
       return implListUnreadCandidates();
     }
     return implListCandidates();
+  }
+
+  if (cmd === 'friends') {
+    const { rest, flags, opts } = parseOpts(tail);
+    if (rest.length > 0 || Object.keys(opts).length > 0 || [...flags].some((f) => f !== 'json')) {
+      die('❌ 用法: friends [--json]');
+    }
+    if (!flags.has('json')) {
+      die('❌ friends 仅支持 --json 输出（全量好友身份，供离线回填/诊断）');
+    }
+    return implListFriendsJson();
   }
 
   if (cmd === 'chat') {
