@@ -112,9 +112,10 @@ export async function withBossSessionLock<T>(callback: () => Promise<T>): Promis
   while (true) {
     try {
       const handle = await open(SESSION_LOCK_FILE, 'wx');
+      const ownMeta = buildSessionLockMeta();
       let lockCreated = false;
       try {
-        await handle.writeFile(JSON.stringify(buildSessionLockMeta()), 'utf8');
+        await handle.writeFile(JSON.stringify(ownMeta), 'utf8');
         lockCreated = true;
       } finally {
         await handle.close().catch(() => {});
@@ -128,7 +129,11 @@ export async function withBossSessionLock<T>(callback: () => Promise<T>): Promis
       try {
         return await callback();
       } finally {
-        await rm(SESSION_LOCK_FILE, { force: true }).catch(() => {});
+        // 只删除自己创建的锁：stale 接管或外部清理后，锁文件可能已属于新持有者
+        const cur = await readSessionLockMeta();
+        if (cur && cur.pid === ownMeta.pid && cur.createdAt === ownMeta.createdAt) {
+          await rm(SESSION_LOCK_FILE, { force: true }).catch(() => {});
+        }
       }
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error ? error.code : '';

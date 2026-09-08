@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // boss-cli 入口：子命令见 cliRouter；业务能力见 toolset（impl*）
-// 环境变量：先读 ~/.boss-cli/.env，再读当前工作目录下的 .env（后者覆盖前者）。
+// 环境变量：先读 ~/.boss-cli/.env，再读当前工作目录下的 .env（dotenv 默认 override:false，先加载的用户级配置优先，后者不覆盖）。
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';

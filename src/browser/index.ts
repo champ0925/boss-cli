@@ -13,6 +13,8 @@ export {
   connectBrowser,
   createPageCDPSession,
   defaultViewportFromEnv,
+  probeRemoteDebuggingWsEndpoint,
+  REMOTE_DEBUGGING_PORT,
   LAUNCH_ARGS_ALLOW_ALL_CORS,
   LAUNCH_ARGS_LESS_AUTOMATION,
   type ConnectBrowserOptions,

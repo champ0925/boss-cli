@@ -10,10 +10,12 @@ import {
 import { isBossChatIndexUrl } from '../common/auth.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
 import { runRequestAttachmentResume } from './action.js';
+import { runOpenCandidateChatByUid } from './chat.js';
 
 export type SendChatMessageOptions = {
   text?: string;
   requestResume?: boolean;
+  encryptUid?: string;
   signal?: AbortSignal;
 };
 
@@ -28,6 +30,9 @@ export async function runSendChatMessage(options: SendChatMessageOptions): Promi
 
   try {
     return await withBossSessionPage(async (page) => {
+      if (options.encryptUid?.trim()) {
+        await runOpenCandidateChatByUid(page, options.encryptUid);
+      }
       const currentUrl = page.url();
       if (!isBossChatIndexUrl(currentUrl)) {
         throw new Error('请先进入聊天列表页（/web/chat/index）并打开候选人聊天。');

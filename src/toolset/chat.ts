@@ -8,6 +8,7 @@ import {
 } from '../browser/index.js';
 import { isBossChatIndexUrl } from '../common/auth.js';
 import { ensureChatListReady } from './list.js';
+import { fetchBossChatIdentities, parseBossChatUniqueId, type BossChatIdentity } from './chat-identity.js';
 import { scrollChatListOnce } from './chat-scroll.js';
 
 type ChatFrom = 'friend' | 'myself' | 'system' | 'unknown';
@@ -270,6 +271,11 @@ export type BossChatMessage = {
 
 /** 结构化聊天详情（供 --json 输出 / messages 表写入）。 */
 export type BossChatDetail = {
+  encryptUid?: string;                // BOSS 沟通身份标识（会轮换，仅用于定位会话）
+  uniqueId?: string;                  // 沟通列表行稳定标识（friendId-friendSource）
+  friendId?: number;                  // BOSS 稳定联系人 ID（候选人主认人键）
+  friendSource?: number;              // 好友来源（与 friendId 组成 uniqueId）
+  securityId?: string;                // 平台安全 ID
   name: string;                       // 候选人姓名
   job: string;                        // 沟通职位
   active: string;                     // 活跃状态
@@ -321,11 +327,20 @@ async function fetchCandidateSummary(
       .filter((el) => !el.classList.contains("name-contet") && !el.classList.contains("active-time"))
       .map((el) => norm(el.textContent))
       .filter((v) => v.length > 0);
-    const recentExperience = Array.from(
-      root.querySelectorAll(".experience-content.detail-list .work-content .value"),
-    )
-      .map((el) => norm(el.textContent))
-      .filter((v) => v.length > 0);
+    // 经历时间列（.time-content li .time，如「2025.02-2025.12」）与内容列（.work-content li .value，如「聚博企业服务 · 法务专员/助理」）
+    // 两个列表按索引一一对应（工作/教育经历都在里面），配对拼接成「时间 内容」；无时间列时回退为纯内容
+    const timeItems = Array.from(
+      root.querySelectorAll(".experience-content.time-list .time-content li .time"),
+    ).map((el) => norm(el.textContent));
+    const expItems = Array.from(
+      root.querySelectorAll(".experience-content.detail-list .work-content li .value"),
+    ).map((el) => norm(el.textContent));
+    const recentExperience =
+      timeItems.length > 0
+        ? timeItems
+            .map((t, i) => String(t + ' ' + (expItems[i] || '')).trim())
+            .filter((v) => v.length > 0)
+        : expItems.filter((v) => v.length > 0);
     const communicationPosition = norm(
       root.querySelector(".position-item .position-name")?.textContent,
     );
@@ -530,7 +545,7 @@ export async function runOpenCandidateChatByIndex(
 
   const rowInfo = (await page.evaluate(`((rowIndex) => {
     const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
-    const wraps = Array.from(document.querySelectorAll(".geek-item-wrap"));
+    const wraps = Array.from(document.querySelectorAll(".geek-item[data-id], .geek-item-wrap"));
     const total = wraps.length;
     const wrap = wraps[rowIndex - 1];
     if (!wrap) return { total, name: "", job: "", message: "", time: "", x: 0, y: 0 };
@@ -575,11 +590,16 @@ export async function runOpenCandidateChatByIndex(
   return renderOpenedCandidateChat(page, rowInfo.name);
 }
 
+/**
+ * 打开候选人聊天并渲染文本结果。
+ * 返回实际命中的候选人姓名（foundName）：模糊匹配（exact=false）时可能与入参不同，
+ * 供 --json 等后续抓取复用同一姓名，避免打开阶段包含匹配成功而摘要阶段精确匹配失败。
+ */
 export async function runOpenCandidateChat(
   page: Page,
   candidateName: string,
   exact = true,
-): Promise<string> {
+): Promise<{ text: string; foundName: string }> {
   const targetName = candidateName.trim();
 
   try {
@@ -589,7 +609,7 @@ export async function runOpenCandidateChat(
     }
 
     // 如果当前已打开的目标聊天就是目标候选人，直接复用，不再重复点击列表
-    const alreadyOpen = (await page.evaluate(`(() => {
+    const alreadyOpenName = (await page.evaluate(`(() => {
       const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
       const targetName = ${JSON.stringify(targetName)};
       const exactMatch = ${JSON.stringify(exact)};
@@ -602,11 +622,11 @@ export async function runOpenCandidateChat(
       };
       const root = Array.from(document.querySelectorAll(".base-info-single-container")).find(isVisible);
       const detailName = norm(root?.querySelector(".name-box")?.textContent);
-      return matches(detailName);
-    })()`)) as boolean;
+      return matches(detailName) ? detailName : "";
+    })()`)) as string;
 
-    if (alreadyOpen) {
-      return renderOpenedCandidateChat(page, targetName);
+    if (alreadyOpenName) {
+      return { text: await renderOpenedCandidateChat(page, alreadyOpenName), foundName: alreadyOpenName };
     }
 
     // 聊天页 DOM 可能因消息实时更新而卡住，先刷新页面确保点击有效
@@ -629,7 +649,7 @@ export async function runOpenCandidateChat(
 
     const maxScrollRounds = 40;
     for (let round = 0; round < maxScrollRounds && !targetWrap; round++) {
-      const wraps = await page.$$('.geek-item-wrap');
+      const wraps = await page.$$('.geek-item[data-id], .geek-item-wrap');
       for (const wrap of wraps) {
         const nameText = await wrap
           .$eval('.geek-name', (el) => (el.textContent ?? '').trim())
@@ -663,7 +683,7 @@ export async function runOpenCandidateChat(
       const exactMatch = ${clickExactLiteral};
       const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
       const matches = (value) => exactMatch ? value === targetName : value.includes(targetName);
-      const wraps = Array.from(document.querySelectorAll(".geek-item-wrap"));
+      const wraps = Array.from(document.querySelectorAll(".geek-item[data-id], .geek-item-wrap"));
       const wrap = wraps.find((el) => matches(norm(el.querySelector(".geek-name")?.textContent)));
       if (!wrap) return false;
       const row = wrap.querySelector(".geek-item") || wrap;
@@ -699,7 +719,7 @@ export async function runOpenCandidateChat(
       const exactMatch = ${clickExactLiteral};
       const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
       const matches = (value) => exactMatch ? value === targetName : value.includes(targetName);
-      const wraps = Array.from(document.querySelectorAll(".geek-item-wrap"));
+      const wraps = Array.from(document.querySelectorAll(".geek-item[data-id], .geek-item-wrap"));
       const wrap = wraps.find((el) => matches(norm(el.querySelector(".geek-name")?.textContent)));
       if (!wrap) return null;
       const row = wrap.querySelector(".geek-item") || wrap;
@@ -744,7 +764,7 @@ export async function runOpenCandidateChat(
         const exactMatch = ${clickExactLiteral};
         const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
         const matches = (value) => exactMatch ? value === targetName : value.includes(targetName);
-        const wraps = Array.from(document.querySelectorAll(".geek-item-wrap"));
+        const wraps = Array.from(document.querySelectorAll(".geek-item[data-id], .geek-item-wrap"));
         const wrap = wraps.find((el) => matches(norm(el.querySelector(".geek-name")?.textContent)));
         if (!wrap) return;
         const row = wrap.querySelector(".geek-item") || wrap;
@@ -756,7 +776,7 @@ export async function runOpenCandidateChat(
         const exactMatch = ${clickExactLiteral};
         const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
         const matches = (value) => exactMatch ? value === targetName : value.includes(targetName);
-        const wraps = Array.from(document.querySelectorAll(".geek-item-wrap"));
+        const wraps = Array.from(document.querySelectorAll(".geek-item[data-id], .geek-item-wrap"));
         const wrap = wraps.find((el) => matches(norm(el.querySelector(".geek-name")?.textContent)));
         if (!wrap) return null;
         const row = wrap.querySelector(".geek-item") || wrap;
@@ -961,7 +981,7 @@ export async function runOpenCandidateChat(
     } else {
       out.push('', '(暂无)');
     }
-    return out.join('\n');
+    return { text: out.join('\n'), foundName: foundName || targetName };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     if (e instanceof Error) {
@@ -971,13 +991,201 @@ export async function runOpenCandidateChat(
   }
 }
 
+/** 按 BOSS 沟通身份精确打开会话，不使用姓名或列表序号。uid 支持 encryptUid / uniqueId / friendId 三种格式。 */
+export async function runOpenCandidateChatByUid(
+  page: Page,
+  encryptUid: string,
+  filter?: string,
+): Promise<{ text: string; foundName: string; uniqueId: string }> {
+  const targetUid = encryptUid.trim();
+  if (!targetUid) {
+    throw new Error('请提供候选人 encryptUid。');
+  }
+  // uniqueId（friendId-source）是行稳定标识，直接按 data-id 匹配；encryptUid 会轮换；
+  // 裸 friendId 按 data-id 前缀匹配（friendId-source 中的 friendId 段）
+  const targetIsUniqueId = /^\d+-\d+$/.test(targetUid);
+  const targetIsFriendId = !targetIsUniqueId && /^\d+$/.test(targetUid);
+  const targetKind: 'uniqueId' | 'friendId' | 'encryptUid' =
+    targetIsUniqueId ? 'uniqueId' : targetIsFriendId ? 'friendId' : 'encryptUid';
+
+  // 点击后确认偶发失败（批量操作时列表重排/未稳定即点击），整轮重试
+  const maxAttempts = 3;
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await openChatByUidOnce(page, { targetUid, targetKind, filter: filter || 'all' });
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
+      await sleepRandom(350, 700);
+    }
+  }
+  throw (lastError ?? new Error(`按 encryptUid 打开候选人聊天失败：${targetUid}`));
+}
+
+/** 单次尝试：定位 uid 行 → 点击 → 确认目标会话；失败抛出（由上层整轮重试）。 */
+async function openChatByUidOnce(
+  page: Page,
+  opts: { targetUid: string; targetKind: 'uniqueId' | 'friendId' | 'encryptUid'; filter: string },
+): Promise<{ text: string; foundName: string; uniqueId: string }> {
+  const { targetUid, targetKind, filter } = opts;
+
+  // 与收集时保持同一分类视图：data-id 只在产生它的视图里稳定
+  await ensureChatListReady(page, filter);
+  if (!isBossChatIndexUrl(page.url())) {
+    throw new Error('当前不在沟通列表页（/web/chat/index），无法按 encryptUid 打开候选人聊天。');
+  }
+
+  const seenUniqueIds = new Set<string>();
+  let matchedUniqueId = '';
+  let matchedName = '';
+  const maxScrollRounds = 40;
+
+  for (let round = 0; round < maxScrollRounds; round++) {
+    const uniqueIds = (await page.evaluate(`(() =>
+      Array.from(document.querySelectorAll(".geek-item[data-id]"))
+        .map((el) => String(el.getAttribute("data-id") || "").trim())
+        .filter(Boolean)
+    )()`)) as string[];
+    const pendingIds = uniqueIds.filter((id) => !seenUniqueIds.has(id));
+    pendingIds.forEach((id) => seenUniqueIds.add(id));
+
+    if (targetKind === 'uniqueId' || targetKind === 'friendId') {
+      const rows = (await page.evaluate(`(() =>
+        Array.from(document.querySelectorAll(".geek-item[data-id]")).map((el) => ({
+          uid: String(el.getAttribute("data-id") || "").trim(),
+          name: (el.querySelector(".geek-name")?.textContent ?? "").replace(/\s+/g, " ").trim(),
+        })))()`)) as Array<{ uid: string; name: string }>;
+      const hit = targetKind === 'uniqueId'
+        ? rows.find((r) => r.uid === targetUid)
+        : rows.find((r) => r.uid.startsWith(`${targetUid}-`));
+      if (hit) {
+        matchedUniqueId = hit.uid;
+        matchedName = hit.name;
+        break;
+      }
+    } else {
+      for (let start = 0; start < pendingIds.length; start += 100) {
+        const identities = await fetchBossChatIdentities(page, pendingIds.slice(start, start + 100));
+        const matched = identities.find((item) => item.encryptUid === targetUid);
+        if (matched) {
+          matchedUniqueId = matched.uniqueId;
+          matchedName = matched.name;
+          break;
+        }
+      }
+    }
+    if (matchedUniqueId) break;
+
+    const moved = await scrollChatListOnce(page);
+    if (!moved) break;
+    await sleepRandom(OPEN_CHAT_SCROLL_GAP_MS.min, OPEN_CHAT_SCROLL_GAP_MS.max);
+  }
+
+  if (!matchedUniqueId) {
+    throw new Error(`沟通列表查找范围内未找到${targetKind}：${targetUid}；分类 ${filter}，已检查 ${seenUniqueIds.size} 条唯一记录，最多滚动 ${maxScrollRounds} 轮`);
+  }
+
+  const clickPoint = (await page.evaluate(`(() => {
+    const uniqueId = ${JSON.stringify(matchedUniqueId)};
+    const row = Array.from(document.querySelectorAll(".geek-item[data-id]"))
+      .find((el) => el.getAttribute("data-id") === uniqueId);
+    if (!row) return null;
+    row.scrollIntoView({ behavior: "instant", block: "center", inline: "nearest" });
+    const rect = row.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`)) as { x: number; y: number } | null;
+  if (!clickPoint) {
+    throw new Error(`已解析 encryptUid，但对应沟通行不在页面中：${matchedUniqueId}`);
+  }
+
+  await page.mouse.click(clickPoint.x, clickPoint.y, { delay: 40 });
+  await sleepRandom(OPEN_CHAT_AFTER_ROW_CLICK_MS.min, OPEN_CHAT_AFTER_ROW_CLICK_MS.max);
+  let selected = { matched: false, name: '' };
+  const confirmDeadline = Date.now() + 6_000;
+  while (Date.now() < confirmDeadline) {
+    selected = (await page.evaluate(`(() => {
+      const expected = ${JSON.stringify(matchedUniqueId)};
+      const row = document.querySelector(".geek-item.selected");
+      const detail = document.querySelector(".base-info-single-container");
+      const norm = (value) => (value ?? "").replace(/\\s+/g, " ").trim();
+      return {
+        matched: row?.getAttribute("data-id") === expected && !!detail,
+        name: norm(detail?.querySelector(".name-box")?.textContent)
+      };
+    })()`)) as { matched: boolean; name: string };
+    if (selected.matched) break;
+    await sleepRandom(220, 360);
+  }
+  if (!selected.matched) {
+    throw new Error(`按 ${targetKind} 点击后未能确认目标会话：${targetUid}`);
+  }
+
+  const foundName = selected.name || matchedName || targetUid;
+  return {
+    text: await renderOpenedCandidateChat(page, foundName),
+    foundName,
+    uniqueId: matchedUniqueId,
+  };
+}
+
+/**
+ * 解析当前会话的 BOSS 沟通身份：
+ * 优先使用打开阶段已确认的 uniqueId；未提供时读左侧列表选中行，
+ * 选中行姓名与详情姓名不一致时返回 null（拒绝把身份绑到别人头上）。
+ * 身份接口只用于富化 encryptUid/securityId；接口异常直接抛出不掩盖。
+ */
+async function resolveChatIdentityForJson(
+  page: Page,
+  candidateName: string,
+  openedUniqueId?: string,
+): Promise<BossChatIdentity | null> {
+  let uniqueId = (openedUniqueId ?? '').trim();
+  if (!uniqueId) {
+    const selected = (await page.evaluate(`(() => {
+      const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
+      const row = document.querySelector(".geek-item.selected");
+      if (!row) return null;
+      return {
+        uid: String(row.getAttribute("data-id") || "").trim(),
+        name: norm(row.querySelector(".geek-name")?.textContent),
+      };
+    })()`)) as { uid: string; name: string } | null;
+    if (!selected || !selected.uid) return null;
+    const expected = candidateName.replace(/\s+/g, ' ').trim();
+    if (!selected.name || selected.name !== expected) return null;
+    uniqueId = selected.uid;
+  }
+  const parsed = parseBossChatUniqueId(uniqueId);
+  if (!parsed) {
+    throw new Error(`当前会话行 data-id 非法（应为 friendId-friendSource）：${uniqueId}`);
+  }
+  const identities = await fetchBossChatIdentities(page, [uniqueId]);
+  const enriched = identities.find((item) => item.uniqueId === uniqueId);
+  return {
+    uniqueId,
+    friendId: parsed.friendId,
+    friendSource: parsed.friendSource,
+    encryptUid: enriched?.encryptUid ?? '',
+    encryptJobId: enriched?.encryptJobId ?? '',
+    securityId: enriched?.securityId ?? '',
+    name: enriched?.name ?? candidateName,
+  };
+}
+
 /**
  * 在当前已打开的候选人聊天页抓取结构化聊天详情（供 --json / messages 表写入）。
- * 前置：已通过 {@link runOpenCandidateChat} 打开候选人聊天。
+ * 前置：已通过 {@link runOpenCandidateChat} 打开候选人聊天；
+ * candidateName 应传打开阶段实际命中的姓名（其返回值的 foundName），此处按精确匹配定位详情容器。
+ * identity.uniqueId 传打开阶段确认的沟通行标识；缺省时从列表选中行解析。
  */
-export async function runGetCurrentChatJson(page: Page, candidateName: string): Promise<BossChatDetail> {
+export async function runGetCurrentChatJson(
+  page: Page,
+  candidateName: string,
+  identity?: { uniqueId?: string },
+): Promise<BossChatDetail> {
   const scraped = await scrapeCurrentChatMessages(page);
   const summary = await fetchCandidateSummary(page, candidateName, true);
+  const chatIdentity = await resolveChatIdentityForJson(page, candidateName, identity?.uniqueId);
 
   const messages: BossChatMessage[] = scraped.messages.map((m) => ({
     time: m.time,
@@ -986,6 +1194,11 @@ export async function runGetCurrentChatJson(page: Page, candidateName: string): 
   }));
 
   return {
+    ...(chatIdentity?.encryptUid ? { encryptUid: chatIdentity.encryptUid } : {}),
+    ...(chatIdentity ? { uniqueId: chatIdentity.uniqueId } : {}),
+    ...(chatIdentity ? { friendId: chatIdentity.friendId } : {}),
+    ...(chatIdentity ? { friendSource: chatIdentity.friendSource } : {}),
+    ...(chatIdentity?.securityId ? { securityId: chatIdentity.securityId } : {}),
     name: summary.name || candidateName,
     job: summary.communicationPosition,
     active: summary.active,

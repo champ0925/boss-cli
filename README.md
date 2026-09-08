@@ -1,5 +1,7 @@
 # boss-cli — Boss直聘自动化 CLI | 批量发消息 · 自动打招呼 · AI Agent 招聘工具
 
+> **【AI-Hiring 二次开发版】** 本目录是 AI-Hiring 项目在 `@joohw/boss-cli` 上游基础上二次开发的版本，新增 `status`（无参 JSON 登录态）、`chat --json`、`action download-resume` / `ask-resume`、`login`（授权登录动作）等命令。**AI-Hiring 的 worker 与 scripts 直接调用本目录的 `dist/cli/index.js`，请勿用 `npm install -g @joohw/boss-cli` 的上游版替代**（上游版缺少这些命令）。使用方式见仓库根目录 `README.md` 与 `docs/boss-cli-usage-guide.md`。本文其余内容为上游原版说明，新增命令以 `docs/boss-cli-usage-guide.md` 和 `node dist/cli/index.js help` 为准。
+
 [![npm version](https://img.shields.io/npm/v/@joohw/boss-cli)](https://www.npmjs.com/package/@joohw/boss-cli)
 [![npm downloads](https://img.shields.io/npm/dm/@joohw/boss-cli)](https://www.npmjs.com/package/@joohw/boss-cli)
 [![license](https://img.shields.io/github/license/joohw/boss-cli)](./LICENSE)
@@ -26,7 +28,7 @@ boss help
 | 场景 | 命令 |
 | --- | --- |
 | Boss直聘批量发消息 | `boss send --text "..."` 配合脚本循环 |
-| Boss直聘自动打招呼 | `boss greet <姓名> [--job <岗位>]` |
+| Boss直聘自动打招呼 | `boss greet <geekId>`（推荐列表刷新后需同时传完整沟通上下文） |
 | Boss直聘候选人筛选 | `boss list` / `boss list --unread` |
 | Boss直聘脚本自动化 | 本机 Chrome + CDP，Cookie 本地存储 |
 | AI 招聘 Agent | 子进程调用，输出 Agent 友好 |
@@ -73,7 +75,7 @@ boss help
 | `boss action download-resume` | 下载当前会话已同意的附件简历 |
 | `boss recommend [岗位关键字]` | 读取推荐候选人列表 |
 | `boss search [关键词]` | 常规搜索牛人列表 |
-| `boss greet <姓名> [--job <岗位>]` | 在当前推荐/深度搜索页对候选人打招呼（不会自动跳转） |
+| `boss greet <geekId> [--job <岗位>]` | 按候选人 ID 精确打招呼；携带 `--job-id/--expect-id/--lid/--security-id` 时列表刷新后仍可执行 |
 | `boss preview <姓名>` | 在线简历预览（每日次数有限） |
 | `boss deep-search [岗位关键字] [--core <要求>] [--bonus <加分项>] [--clear-core] [--clear-bonus] [--match]` | 深度搜索表单状态；`--core` / `--bonus` 可重复，并按传入列表同步分组；`--clear-*` 清空分组；默认不输出候选列表，`--match` 输出最新 20 条 |
 | `boss positions` | 读取职位列表 |
@@ -100,9 +102,9 @@ boss send --text "您好，请问方便发一下简历吗？"
 boss chat --index 2 --unread
 boss chat 张三 --index 2 --unread --strict
 
-# 4. 先进入推荐页，再在当前页打招呼
-boss recommend 前端工程师
-boss greet 张三 --job 前端工程师
+# 4. 推荐 JSON 会返回 geekId 和完整沟通上下文；Worker 会自动保存并传递
+boss recommend 前端工程师 --json
+boss greet <geekId> --job-id <encryptJobId> --expect-id <expectId> --lid <lid> --security-id <securityId>
 
 # 5. 常规搜索牛人
 boss search "langgraph"
@@ -128,7 +130,7 @@ boss-cli 每条命令输出纯文本，适合 LLM 通过子进程编排：
 4. boss send -t "..."     → 发送消息
 5. boss recommend         → 读取推荐列表
 6. boss search <关键词>   → 读取常规搜索列表
-7. boss greet <姓名>      → 批量打招呼
+7. boss greet <geekId>    → 按候选人 ID 打招呼
 ```
 
 详见 [AGENTS.md](./AGENTS.md)。

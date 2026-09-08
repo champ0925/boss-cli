@@ -1233,7 +1233,8 @@ async function waitForAiFormJobDropdownReady(page: Page): Promise<void> {
 
 async function waitForAiFormJobSearchResults(page: Page, keyword: string): Promise<void> {
   await page.waitForFunction(
-    `((kw) => {
+    `(() => {
+      const kw = ${JSON.stringify(keyword)};
       const norm = (v) => (v ?? "").replace(/\\s+/g, "").trim().toLowerCase();
       const rows = Array.from(
         document.querySelectorAll(
@@ -1245,21 +1246,20 @@ async function waitForAiFormJobSearchResults(page: Page, keyword: string): Promi
         const label = norm(el.querySelector(".job-option-text, .label")?.textContent || el.textContent || "");
         return label.includes(norm(kw));
       });
-    })`,
+    })()`,
     { timeout: 10_000 },
-    keyword,
   );
 }
 
 async function waitForAiFormJobSelected(page: Page, expectedLabel: string): Promise<void> {
   await page.waitForFunction(
-    `((label) => {
+    `(() => {
+      const label = ${JSON.stringify(expectedLabel)};
       const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
       const selected = norm(document.querySelector(".job-dropmenu-select .job-main-text")?.textContent);
       return !!selected && selected === label;
-    })`,
+    })()`,
     { timeout: 10_000 },
-    expectedLabel,
   );
   await ensureInDeepSearchPage(page);
 }

@@ -4,12 +4,12 @@ import { ensureAppDataLayout, RESUME_OCR_DIR } from '../config.js';
 import { baiduOcrImageBase64, isBaiduOcrConfigured } from './baidu_ocr.js';
 
 /**
- * 是否对在线简历截图做 OCR。关闭：`BOSS_RESUME_OCR=0`。
- * 开启时需配置百度 `API_KEY` + `SECRET_KEY`（在线识别，无本地引擎）。
+ * 是否对在线简历截图做 OCR。默认关闭；开启需显式设 `BOSS_RESUME_OCR=1|true|yes|on`
+ * （依赖百度 API_KEY + SECRET_KEY 在线识别，无本地引擎）。
  */
 export function isResumeOcrEnabled(): boolean {
   const v = process.env.BOSS_RESUME_OCR?.trim().toLowerCase();
-  return v !== '0' && v !== 'false' && v !== 'no';
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
 /** 串行执行 OCR，避免并发请求交错 */

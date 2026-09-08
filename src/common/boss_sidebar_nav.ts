@@ -11,27 +11,26 @@ export async function clickBossSidebarMenuToPath(
   menuLabel: string,
   targetPath: string,
 ): Promise<void> {
-  const clicked = (await page.evaluate(
-    `(({ label, path }) => {
-      const norm = (v) => (v ?? "").replace(/\\s+/g, "");
-      const links = Array.from(document.querySelectorAll(".menu-list a"));
-      const target = links.find((a) => {
-        const href = a.getAttribute("href") ?? "";
-        if (href.includes(path)) {
-          return true;
-        }
-        const text = norm(a.querySelector(".menu-item-content span")?.textContent ?? a.textContent);
-        return text.includes(label);
-      });
-      if (!(target instanceof HTMLElement)) {
-        return false;
+  const clicked = (await page.evaluate(`(() => {
+    const label = ${JSON.stringify(menuLabel)};
+    const path = ${JSON.stringify(targetPath)};
+    const norm = (v) => (v ?? "").replace(/\\s+/g, "");
+    const links = Array.from(document.querySelectorAll(".menu-list a"));
+    const target = links.find((a) => {
+      const href = a.getAttribute("href") ?? "";
+      if (href.includes(path)) {
+        return true;
       }
-      target.scrollIntoView({ block: "center", inline: "nearest" });
-      target.click();
-      return true;
-    })`,
-    { label: menuLabel, path: targetPath },
-  )) as boolean;
+      const text = norm(a.querySelector(".menu-item-content span")?.textContent ?? a.textContent);
+      return text.includes(label);
+    });
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+    target.scrollIntoView({ block: "center", inline: "nearest" });
+    target.click();
+    return true;
+  })()`)) as boolean;
 
   if (!clicked) {
     throw new Error(`未找到侧边栏菜单“${menuLabel}”，无法跳转到 ${targetPath}。`);
@@ -40,15 +39,15 @@ export async function clickBossSidebarMenuToPath(
   await sleepRandom(SIDEBAR_NAV_AFTER_CLICK_MS.min, SIDEBAR_NAV_AFTER_CLICK_MS.max);
 
   await page.waitForFunction(
-    `((path) => {
+    `(() => {
+      const path = ${JSON.stringify(targetPath)};
       try {
         const p = window.location.pathname.replace(/\\/+$/, "") || "/";
         return p === path;
       } catch {
         return false;
       }
-    })`,
+    })()`,
     { timeout: SIDEBAR_NAV_WAIT_MS },
-    targetPath,
   );
 }

@@ -267,6 +267,32 @@ async function readJobsFromPageAnyFrame(
   };
 }
 
+/**
+ * BOSS 改版后岗位行不再渲染 data-id/文本 ID 段：
+ * 改从 /wapi/zpjob/job/data/list 接口按岗位名取 encryptId（页面同源带 cookie）。
+ */
+async function fetchBossJobIdMap(page: Page): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  for (let pageNo = 1; pageNo <= 3; pageNo++) {
+    const rows = (await page.evaluate(
+      `(async () => {
+        const resp = await fetch('/wapi/zpjob/job/data/list?position=0&type=0&searchStr=&comId=&tagIdStr=&page=${pageNo}', {
+          credentials: "include",
+          headers: { "Accept": "application/json" }
+        });
+        const j = await resp.json();
+        const d = j && j.zpData && j.zpData.data;
+        return Array.isArray(d) ? d.map((x) => ({ name: x.jobName || "", id: x.encryptId || "" })) : [];
+      })()`,
+    )) as Array<{ name: string; id: string }>;
+    if (!rows.length) break;
+    for (const r of rows) {
+      if (r.name && r.id && !map.has(r.name)) map.set(r.name, r.id);
+    }
+  }
+  return map;
+}
+
 async function waitForJobRowsReady(
   page: Page,
   timeoutMs: number,
@@ -479,13 +505,18 @@ export async function runListOpenPositions(
       const ready = await waitForJobRowsReady(page, 16_000);
       await sleepRandom(350, 920);
 
+      // 岗位 ID 是绑定与同步的必要字段：优先接口取，DOM data-id 兜底，均无则明确报错
+      const jobIdMap = await fetchBossJobIdMap(page);
       const jobs = ready.data.jobs.filter((it) => it.title.length > 0);
       const jobLines = jobs.map((it, idx) => {
         const info = it.meta.length > 0 ? it.meta.join('｜') : '信息缺失';
         const stats = `看过我:${it.viewed}｜沟通过:${it.chatted}｜感兴趣:${it.interested}`;
         const tag = it.label ? `｜标签:${it.label}` : '';
-        const id = it.id ? `｜ID:${it.id}` : '';
-        return `${idx + 1}. ${it.title}｜状态:${it.status || '未知'}${tag}｜${info}｜${stats}${id}`;
+        const id = jobIdMap.get(it.title) || it.id || '';
+        if (!id) {
+          throw new Error(`岗位「${it.title}」未取到平台岗位 ID（列表接口与页面均无），已停止以避免错误绑定`);
+        }
+        return `${idx + 1}. ${it.title}｜状态:${it.status || '未知'}${tag}｜${info}｜${stats}｜ID:${id}`;
       });
       const details = jobLines.length > 0 ? jobLines.join('\n') : '当前页面未读取到职位。';
       const openCount = jobs.filter((it) => it.status.includes('开放中')).length;

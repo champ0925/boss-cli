@@ -1,4 +1,4 @@
-import { writeFile } from 'node:fs/promises';
+import { stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Page } from 'puppeteer-core';
 import {
@@ -390,15 +390,11 @@ async function updateCandidateRemark(page: Page, remarkText: string): Promise<st
   await page.type(textareaSel, nextRemark, { delay: 24 });
   await sleepRandom(200, 360);
 
-  const filledOk = (await page.evaluate(
-    `((selector, expected) => {
-      const el = document.querySelector(selector);
-      if (!(el instanceof HTMLTextAreaElement)) return false;
-      return (el.value ?? "").trim() === expected;
-    })`,
-    textareaSel,
-    nextRemark,
-  )) as boolean;
+  const filledOk = (await page.evaluate(`((selector, expected) => {
+    const el = document.querySelector(selector);
+    if (!(el instanceof HTMLTextAreaElement)) return false;
+    return (el.value ?? "").trim() === expected;
+  })(${JSON.stringify(textareaSel)}, ${JSON.stringify(nextRemark)})`)) as boolean;
   if (!filledOk) {
     throw new Error('备注输入未生效，请重试。');
   }
@@ -520,8 +516,24 @@ function buildResumeNamePart(info: { name: string; job: string }): string {
  * 不依赖 `contentFrame()`，与内页是否 canvas / 跨域无关。
  *
  * 进入前记录视口（`snapshotBossPageViewport`，见 {@link captureCResumeIframeToFile}）。
+ *
+ * 幂等：截图落盘后写入缓存，withBossSessionPage 因收尾「执行上下文销毁」重试整个
+ * callback 时直接复用已截图文件，避免同一候选人重复截图。
  */
+const LAST_SHOT_CACHE_TTL_MS = 30_000;
+const lastShotCache = new WeakMap<Page, { path: string; at: number }>();
+
 async function captureOnlineResumeScreenshot(page: Page, candidateInfo: { name: string; job: string }): Promise<string | null> {
+  const cached = lastShotCache.get(page);
+  if (cached && Date.now() - cached.at < LAST_SHOT_CACHE_TTL_MS) {
+    try {
+      await stat(cached.path);
+      return cached.path;
+    } catch {
+      /* 文件已被清理，重新截 */
+    }
+  }
+
   ensureAppDataLayout();
 
   const savedViewport = await snapshotBossPageViewport(page);
@@ -561,6 +573,7 @@ async function captureOnlineResumeScreenshot(page: Page, candidateInfo: { name: 
     await closeCResumePanel(page);
     return null;
   }
+  lastShotCache.set(page, { path: absPath, at: Date.now() });
   return absPath;
 }
 
@@ -614,6 +627,8 @@ export async function runDownloadAttachmentResume(page: Page, outDir?: string): 
   // 2) 等待附件预览 iframe 出现（取最后一个：历史弹层可能未关闭而残留多个）
   const iframeSel = 'iframe.attachment-iframe';
   await page.waitForSelector(iframeSel, { timeout: 15_000 }).catch(() => null);
+  // iframe 挂载后 src 是异步赋值的，先等一拍再读，避免误抛「弹层未出现」
+  await sleepRandom(400, 900);
   const src = (await page.evaluate((sel: string) => {
     const list = Array.from(document.querySelectorAll(sel)) as HTMLIFrameElement[];
     if (list.length === 0) return '';
@@ -624,8 +639,6 @@ export async function runDownloadAttachmentResume(page: Page, outDir?: string): 
   if (!src) {
     throw new Error('已点击「点击预览附件简历」，但附件预览弹层未出现。');
   }
-
-  await sleepRandom(400, 900);
 
   // 3) 从 iframe src 解析真实文件 URL
   const urlMatch = src.match(/[?&]url=([^&]+)/);

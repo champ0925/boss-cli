@@ -239,13 +239,16 @@ export async function captureCResumeIframeToFile(
       }
     } catch { /* 跨域忽略 */ }
 
-    await iframe.evaluate(`((el, h) => {
+    await iframe.frame.evaluate(`(() => {
+      const h = ${JSON.stringify(targetHeight)};
+      const el = document.querySelector(${JSON.stringify(C_RESUME_IFRAME_SELECTOR)});
+      if (!(el instanceof HTMLElement)) return;
       if (h > 0) {
         el.style.height = h + "px";
         el.style.maxHeight = "none";
       }
       el.scrollIntoView({ block: "start", inline: "nearest" });
-    })`, targetHeight).catch(() => {});
+    })()`).catch(() => {});
 
     const box = await iframe.boundingBox();
     if (!box) {
@@ -320,6 +323,16 @@ export async function captureCResumeIframeToFile(
     await closeCResumePanel(page);
     return true;
   } finally {
-    await resumeHeight(page, preOpenViewport);
+    // 视口恢复失败（页面导航/重渲染销毁上下文）不致命：截图已落盘，
+    // 若这里抛错会让 withBossSessionPage 误以为操作失败而重试整个截图流程 → 产生重复截图。
+    try {
+      await resumeHeight(page, preOpenViewport);
+    } catch {
+      try {
+        await page.setViewport(preOpenViewport).catch(() => {});
+      } catch {
+        /* 视口恢复彻底失败，忽略 */
+      }
+    }
   }
 }

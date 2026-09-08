@@ -25,8 +25,10 @@ import {
 } from './deep-search.js';
 import {
   assertRecommendPageReadyForPreview,
+  ensureInRecommendPage,
   isBossChatRecommendUrl,
   openRecommendResumePreview,
+  selectRecommendJob,
 } from './recommend.js';
 import {
   assertNormalSearchPageReadyForPreview,
@@ -37,6 +39,8 @@ import {
 
 export type PreviewOptions = {
   candidateTarget: string;
+  candidateGeekId?: string;
+  jobKeyword?: string;
 };
 
 /** 把 Date 格式化为文件名安全的时间串：yyyy-MM-dd HH-mm-ss（Windows 文件名不能含 :） */
@@ -69,6 +73,14 @@ export async function runPreview(options: PreviewOptions): Promise<string> {
   }
   try {
     return await withBossSessionPage(async (page) => {
+      if (options.candidateGeekId) {
+        const frame = await ensureInRecommendPage(page);
+        const selected = await selectRecommendJob(frame, options.jobKeyword?.trim() || '');
+        const savedOriginal = await snapshotBossPageViewport(page);
+        const opened = await openRecommendResumePreview(frame, options.candidateGeekId, true);
+        if (!opened) throw new Error(`当前推荐列表未找到 geekId=${options.candidateGeekId}`);
+        return captureOpenedResume(page, savedOriginal, target, selected ? `当前岗位：${selected}` : '当前岗位：当前推荐列表');
+      }
       const url = page.url();
       let jobLine: string;
       let savedOriginal: Awaited<ReturnType<typeof snapshotBossPageViewport>>;
@@ -99,6 +111,15 @@ export async function runPreview(options: PreviewOptions): Promise<string> {
         throw new Error('未在列表中找到该候选人，或点击未能打开简历预览。');
       }
 
+      return captureOpenedResume(page, savedOriginal, target, jobLine);
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new Error(`简历预览失败：${message}`);
+  }
+}
+
+async function captureOpenedResume(page: Parameters<typeof snapshotBossPageViewport>[0], savedOriginal: Awaited<ReturnType<typeof snapshotBossPageViewport>>, target: string, jobLine: string): Promise<string> {
       const outcome = await waitForCResumeIframeOrPaywall(page, ONLINE_RESUME_IFRAME_WAIT_MAX_MS);
       if (outcome !== 'iframe') {
         const paywall = await describeBossPaywallPopupIfPresent(page);
@@ -146,9 +167,4 @@ export async function runPreview(options: PreviewOptions): Promise<string> {
         const msg = e instanceof Error ? e.message : String(e);
         throw new Error(`简历预览截图已保存，但 OCR 失败：${msg}`);
       }
-    });
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    throw new Error(`简历预览失败：${message}`);
-  }
 }

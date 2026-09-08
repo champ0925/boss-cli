@@ -19,6 +19,6 @@ export function implSetBaiduCredentials(apiKey: string, secretKey: string): stri
     '已保存百度 OCR 凭证。',
     `文件：${path}`,
     '当前进程已生效；新开终端或下次启动 boss 时会自动读取。',
-    '若当前工作目录下存在 .env 且含 BOSS_BAIDU_* 或 API_KEY/SECRET_KEY，加载顺序为：用户配置先、项目 .env 后（后者可覆盖）。',
+    '若当前工作目录下存在 .env 且含 BOSS_BAIDU_* 或 API_KEY/SECRET_KEY，加载顺序为：用户配置先、项目 .env 后（dotenv 默认不覆盖已有变量，用户配置优先生效）。',
   ].join('\n');
 }

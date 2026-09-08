@@ -53,7 +53,7 @@ boss-cli/
 │   │   ├── recommend.ts      # boss recommend [岗位]
 │   │   ├── deep-search.ts    # boss deep-search
 │   │   ├── normal-search.ts  # boss search [关键词]
-│   │   ├── greet.ts          # boss greet <姓名>
+│   │   ├── greet.ts          # boss greet <geekId>
 │   │   ├── preview.ts        # boss preview <姓名>
 │   │   └── jd.ts             # boss positions / boss jd <name>
 │   ├── ocr/

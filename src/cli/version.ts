@@ -7,6 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { CACHE_DIR } from '../config.js';
 
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** 上次检查失败时的短退避窗口：避免网络异常时每条命令都卡一次 registry 请求 */
+const UPDATE_CHECK_FAILURE_BACKOFF_MS = 10 * 60 * 1000;
+/** registry 请求超时：直连 registry.npmjs.org，网络黑洞时避免启动无限挂起 */
+const NPM_REGISTRY_FETCH_TIMEOUT_MS = 4_000;
 const UPDATE_CHECK_STATE_FILE = join(CACHE_DIR, 'version-check.json');
 
 function getPackageJsonPath(): string {
@@ -55,6 +59,8 @@ type PackageUpdateCheckState = {
   packageName: string;
   currentVersion: string;
   latestVersion: string;
+  /** 上次检查是否成功；失败（false）时按短退避窗口重试。旧缓存无此字段，视为成功 */
+  ok?: boolean;
 };
 
 type CheckPackageUpdateOptions = {
@@ -72,6 +78,7 @@ export async function fetchNpmLatestVersion(packageName: string): Promise<string
   const url = `https://registry.npmjs.org/${path}`;
   const res = await fetch(url, {
     headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(NPM_REGISTRY_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`查询 npm 最新版本失败：HTTP ${res.status}（${url}）`);
@@ -99,7 +106,9 @@ function shouldCheckFromState(
   if (Number.isNaN(checkedAtMs)) {
     throw new Error(`版本检查缓存 checkedAt 无法解析：${state.checkedAt}`);
   }
-  return now.getTime() - checkedAtMs > intervalMs;
+  const effectiveIntervalMs =
+    state.ok === false ? Math.min(intervalMs, UPDATE_CHECK_FAILURE_BACKOFF_MS) : intervalMs;
+  return now.getTime() - checkedAtMs > effectiveIntervalMs;
 }
 
 async function readUpdateCheckState(statePath: string): Promise<PackageUpdateCheckState | null> {
@@ -121,6 +130,7 @@ async function readUpdateCheckState(statePath: string): Promise<PackageUpdateChe
     packageName: parsed.packageName,
     currentVersion: parsed.currentVersion,
     latestVersion: parsed.latestVersion,
+    ok: typeof parsed.ok === 'boolean' ? parsed.ok : undefined,
   };
 }
 
@@ -163,7 +173,21 @@ export async function checkPackageUpdate(
     };
   }
 
-  const latest = await fetchLatestVersion(packageName);
+  let latest: string;
+  try {
+    latest = await fetchLatestVersion(packageName);
+  } catch (e) {
+    // 失败也落盘 checkedAt（标记 ok:false）：短退避窗口内不再发起请求，
+    // 防止网络不可达时后续每条命令都在启动时卡一次 registry 请求
+    await writeUpdateCheckState(statePath, {
+      checkedAt: now.toISOString(),
+      packageName,
+      currentVersion: current,
+      latestVersion: state?.latestVersion ?? current,
+      ok: false,
+    });
+    throw e;
+  }
   const result = {
     checked: true,
     current,
@@ -175,6 +199,7 @@ export async function checkPackageUpdate(
     packageName,
     currentVersion: current,
     latestVersion: latest,
+    ok: true,
   });
   return result;
 }

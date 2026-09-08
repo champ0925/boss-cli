@@ -8,6 +8,7 @@ import {
 import { BOSS_CHAT_INDEX_URL, isBossChatIndexUrl } from '../common/auth.js';
 import { ensurePage } from '../common/ensure_page.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
+import { fetchBossChatIdentities } from './chat-identity.js';
 
 type CandidateItem = {
   name: string;
@@ -15,6 +16,15 @@ type CandidateItem = {
   time: string;
   message: string;
   unreadCount: number;
+};
+
+export type BossChatListItem = CandidateItem & {
+  /** 行稳定标识（friendId-source），不随 encryptUid 轮换 */
+  uniqueId: string;
+  index: number;
+  encryptUid: string;
+  encryptJobId: string;
+  securityId: string;
 };
 
 async function waitForCandidateListSettled(
@@ -223,4 +233,58 @@ export async function runGetCandidateList(
     }
     throw new Error(`获取候选人列表失败：${String(e)}`);
   }
+}
+
+/** 结构化沟通列表，补充 encryptUid，供上层系统按 ID 定位会话。 */
+export async function runGetCandidateListJson(
+  opts: { unreadOnly?: boolean; resumeOnly?: boolean; category?: string } = {},
+): Promise<{ filter: string; candidates: BossChatListItem[] }> {
+  const unreadOnly = opts.unreadOnly === true;
+  const resumeOnly = opts.resumeOnly === true;
+  const category = (opts.category ?? '').trim();
+  const filter: ChatListFilter =
+    unreadOnly ? 'unread' : resumeOnly ? 'resume' : category || 'all';
+
+  return withBossSessionPage(async (page) => {
+    await ensureChatListReady(page, filter);
+    const rows = (await page.evaluate(`(() => {
+      const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
+      return Array.from(document.querySelectorAll(".geek-item[data-id]"))
+        .map((el, index) => {
+          const badge = el.querySelector(".badge-count");
+          const digits = norm(badge?.textContent).replace(/\\D/g, "");
+          return {
+            index: index + 1,
+            uniqueId: String(el.getAttribute("data-id") || "").trim(),
+            name: norm(el.querySelector(".geek-name")?.textContent),
+            job: norm(el.querySelector(".source-job")?.textContent),
+            time: norm(el.querySelector(".time")?.textContent),
+            message: norm(el.querySelector(".push-text")?.textContent),
+            unreadCount: digits ? parseInt(digits, 10) || 0 : 0
+          };
+        })
+        .filter((item) => item.name && item.uniqueId);
+    })()`)) as Array<CandidateItem & { index: number; uniqueId: string }>;
+
+    const identities = await fetchBossChatIdentities(page, rows.map((row) => row.uniqueId));
+    const identityByUniqueId = new Map(identities.map((item) => [item.uniqueId, item]));
+    const candidates = rows.map((row): BossChatListItem => {
+      const identity = identityByUniqueId.get(row.uniqueId);
+      // 个别行身份接口未返回 encryptUid 时不整批失败：同步定位优先用 uniqueId（data-id 稳定），
+      // 缺 encryptUid 只影响按 ID 打开路径，保留该行由调用方按 uniqueId 兜底。
+      return {
+        index: row.index,
+        name: row.name,
+        job: row.job,
+        time: row.time,
+        message: row.message,
+        unreadCount: row.unreadCount,
+        uniqueId: row.uniqueId,
+        encryptUid: identity?.encryptUid ?? '',
+        encryptJobId: identity?.encryptJobId ?? '',
+        securityId: identity?.securityId ?? '',
+      };
+    });
+    return { filter, candidates };
+  });
 }

@@ -127,12 +127,12 @@ async function runKeywordSearch(frame: Frame, keyword: string): Promise<void> {
   }
 
   await frame.waitForFunction(
-    `((kw) => {
+    `(() => {
+      const kw = ${JSON.stringify(keyword)};
       const input = document.querySelector(".search-input");
       return input instanceof HTMLInputElement && input.value === kw;
-    })`,
+    })()`,
     { timeout: 5_000 },
-    keyword,
   );
   await sleepRandom(SEARCH_RESULT_SETTLE_MS.min, SEARCH_RESULT_SETTLE_MS.max);
   await ensureSearchFrameReady(frame);

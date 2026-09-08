@@ -1,9 +1,15 @@
 /**
  * 主动检查 BOSS 登录态，输出结构化结果（供 Worker 健康检查 / login_check 动作）。
  * 与其它命令不同：登录失效时不抛错，而是返回 { ok:false, needLogin:true }。
+ * 只读路径：浏览器未启动（调试端口探测不到）时直接返回，绝不拉起新的 Chrome 实例。
  */
 import { existsSync, statSync } from 'node:fs';
 import { BROWSER_USER_DATA_DIR } from '../config.js';
+import {
+  getBrowserRef,
+  probeRemoteDebuggingWsEndpoint,
+  REMOTE_DEBUGGING_PORT,
+} from '../browser/index.js';
 import { probeLoggedInFromPage } from '../common/auth.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
 
@@ -17,6 +23,11 @@ export type BossLoginStatus = {
   lastLoginAt: string;   // 用户数据目录最后修改时间（近似最后登录时间）
   currentUrl: string;    // 当前页面 URL
   checkedAt: string;     // 检查时间 ISO
+  platformAccountId: string;           // BOSS userId
+  platformAccountIdSecondary: string;  // BOSS encryptUserId
+  companyId: string;                    // BOSS encryptComId
+  companyName: string;
+  legalName: string;
   error?: string;        // 检查过程中的异常（如浏览器未启动）
 };
 
@@ -35,30 +46,67 @@ export async function runCheckLoginStatus(): Promise<BossLoginStatus> {
     lastLoginAt,
     currentUrl: '',
     checkedAt,
+    platformAccountId: '',
+    platformAccountIdSecondary: '',
+    companyId: '',
+    companyName: '',
+    legalName: '',
   };
 
   try {
+    // 只读检查：先探测调试端口，浏览器未启动时直接返回，不拉起新 Chrome（与 help 宣称的只读行为一致）。
+    // getBrowserRef() 覆盖同进程内已连接会话（如交互模式 / npm run dev）。
+    const wsEndpoint = await probeRemoteDebuggingWsEndpoint(REMOTE_DEBUGGING_PORT, 800);
+    if (!wsEndpoint && !getBrowserRef()) {
+      return {
+        ...base,
+        ok: false,
+        needLogin: true,
+        error: `浏览器未启动：未在 127.0.0.1:${REMOTE_DEBUGGING_PORT} 检测到调试端口。请先运行 boss login 启动浏览器并完成登录。`,
+      };
+    }
     return await withBossSessionPage(
       async (page) => {
         const url = page.url();
         const { loggedIn } = await probeLoggedInFromPage(page);
-        const account = loggedIn
-          ? ((await page.evaluate(`(() => {
-              const sels = [".user-name", "span.user-name", "[class*='user-name']", ".label-name", ".nav-user .name"];
-              for (const s of sels) {
-                const el = document.querySelector(s);
-                const t = (el?.textContent || "").trim();
-                if (t && t.length >= 2 && t.length <= 64 && !/登录|注册/.test(t)) return t;
-              }
-              return "";
-            })()`)) as string)
-          : '';
+        if (!loggedIn) {
+          return { ...base, loggedIn: false, needLogin: true, currentUrl: url };
+        }
+        const identity = (await page.evaluate(`(async () => {
+          const response = await fetch("/wapi/zpuser/wap/getUserInfo.json", {
+            credentials: "include"
+          });
+          if (!response.ok) throw new Error("BOSS 当前账号接口 HTTP " + response.status);
+          const result = await response.json();
+          if (result?.code !== 0 || !result?.zpData) {
+            throw new Error(result?.message || "BOSS 当前账号接口返回异常");
+          }
+          const data = result.zpData;
+          return {
+            platformAccountId: String(data.userId || ""),
+            platformAccountIdSecondary: String(data.encryptUserId || ""),
+            account: String(data.showName || ""),
+            legalName: String(data.name || ""),
+            companyId: String(data.encryptComId || ""),
+            companyName: String(data.brandName || "")
+          };
+        })()`)) as {
+          platformAccountId: string;
+          platformAccountIdSecondary: string;
+          account: string;
+          legalName: string;
+          companyId: string;
+          companyName: string;
+        };
+        if (!identity.platformAccountId || !identity.platformAccountIdSecondary) {
+          throw new Error('BOSS 当前账号接口缺少 userId 或 encryptUserId');
+        }
         return {
           ...base,
-          loggedIn,
-          needLogin: !loggedIn,
-          account,
+          loggedIn: true,
+          needLogin: false,
           currentUrl: url,
+          ...identity,
         };
       },
       // status 只读检查：不强制跳聊天主页、不强制校验 menu-list，避免副作用

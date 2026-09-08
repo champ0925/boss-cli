@@ -10,8 +10,230 @@ import { ensurePage } from '../common/ensure_page.js';
 
 const BOSS_CHAT_RECOMMEND_URL = 'https://www.zhipin.com/web/chat/recommend';
 
+/** 推荐筛选面板（VIP 专享）的条件标签 */
+const BOSS_EDUCATION_ORDER = ['初中及以下', '中专/中技', '高中', '大专', '本科', '硕士', '博士'];
+const BOSS_EXPERIENCE_LABELS = ['1年以内', '1-3年', '3-5年', '5-10年', '10年以上'];
+
+export interface RecommendFilterOptions {
+  /** 性别筛选：男 / 女（面板为单选） */
+  gender?: string;
+  /** 最低学历（自动勾选更高学历，如 本科 → 本科+硕士+博士） */
+  minEducation?: string;
+  /** 经验档位：1年以内 / 1-3年 / 3-5年 / 5-10年 / 10年以上 */
+  experience?: string;
+}
+
+export function resolveRecommendGender(value?: string): '男' | '女' | '' {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  if (raw === '男') return '男';
+  if (raw === '女') return '女';
+  throw new Error(`--gender 取值无效："${value}"。仅支持 男 / 女，缺省表示不限`);
+}
+
+function educationLabelsAtOrAbove(value?: string): string[] {
+  const raw = String(value ?? '').trim();
+  if (!raw) return [];
+  const normalized = raw === '中专' ? '中专/中技' : raw;
+  const index = BOSS_EDUCATION_ORDER.indexOf(normalized);
+  if (index < 0) {
+    throw new Error(`--min-education 取值无效："${value}"。支持：${BOSS_EDUCATION_ORDER.join('/')}`);
+  }
+  return BOSS_EDUCATION_ORDER.slice(index);
+}
+
+function resolveExperienceLabels(value?: string): string[] {
+  const raw = String(value ?? '').trim();
+  if (!raw) return [];
+  const labels: string[] = [];
+  for (const item of raw.split(/[,，、]/).map((s) => s.trim()).filter(Boolean)) {
+    if (!BOSS_EXPERIENCE_LABELS.includes(item)) {
+      throw new Error(`--experience 取值无效："${item}"。支持逗号多选：${BOSS_EXPERIENCE_LABELS.join('/')}`);
+    }
+    if (!labels.includes(item)) labels.push(item);
+  }
+  return labels;
+}
+
+/** 等待推荐 iframe 就绪（卡片已渲染或筛选分组已挂载）；筛选点击可能触发 iframe 带参刷新，每次点击后都需重新获取 */
+async function getReadyRecommendFrame(page: Page, timeoutMs = 30_000): Promise<Frame> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const frame = page.frames().find((f) => f.url().includes('/web/frame/recommend'));
+    if (frame) {
+      const ready = (await frame.evaluate(`(() => {
+        const cards = document.querySelectorAll(".candidate-card-wrap, .card-list .card-item").length;
+        const groups = document.querySelectorAll(".recommend-filter .filter-wrap").length;
+        return { cards, groups };
+      })()`).catch(() => null)) as { cards: number; groups: number } | null;
+      if (ready && (ready.cards > 0 || ready.groups >= 5)) return frame;
+    }
+    await sleepRandom(900, 1500);
+  }
+  throw new Error('等待推荐 iframe 就绪超时（30 秒）。');
+}
+
+/** 在就绪的推荐 frame 上执行操作；frame 因筛选刷新而 detach 时自动换新 frame 重试 */
+async function evaluateOnRecommendFrame<T>(
+  page: Page,
+  fn: (frame: Frame) => Promise<T>,
+  attempts = 4,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) await sleepRandom(1500, 2500);
+    const frame = await getReadyRecommendFrame(page);
+    try {
+      return await fn(frame);
+    } catch (e) {
+      lastError = e;
+      const message = e instanceof Error ? e.message : String(e);
+      if (!/detached|Target closed|Execution context was destroyed/i.test(message)) throw e;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+/** 判断筛选面板是否展开 */
+async function isFilterPanelVisible(frame: Frame): Promise<boolean> {
+  return (await frame.evaluate(`(() => {
+    const panel = document.querySelector(".recommend-filter");
+    return !!(panel && panel.offsetParent !== null && panel.getBoundingClientRect().height > 0);
+  })()`)) as boolean;
+}
+
+/** 打开筛选面板：点击后等待面板真正展开再返回，避免下一次重试把面板点关 */
+async function openFilterPanel(page: Page): Promise<void> {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (attempt > 0) await sleepRandom(1200, 2000);
+    const opened = (await evaluateOnRecommendFrame(page, async (frame) => {
+      return (await frame.evaluate(`(() => {
+        const panel = document.querySelector(".recommend-filter");
+        // 根节点含"筛选"按钮永远有高度，分组（.filter-wrap）挂载才算面板展开
+        if (panel && document.querySelector(".recommend-filter .filter-wrap")) return "open";
+        const label = document.querySelector(".recommend-filter .filter-label");
+        if (label instanceof HTMLElement) {
+          label.scrollIntoView({ block: "center" });
+          label.click();
+          return "clicked";
+        }
+        return "no-entry";
+      })()`)) as string;
+    })) as string;
+    if (opened === 'open') return;
+    if (opened === 'no-entry') {
+      throw new Error('未找到推荐筛选入口（.recommend-filter .filter-label）。');
+    }
+    // clicked → 轮询等待面板展开
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await sleepRandom(400, 700);
+      const visible = await evaluateOnRecommendFrame(page, (frame) => isFilterPanelVisible(frame));
+      if (visible) return;
+    }
+  }
+  throw new Error('推荐筛选面板未能展开。');
+}
+
+async function clickPanelButton(page: Page, label: '清除' | '确定'): Promise<boolean> {
+  if (label === '确定') {
+    // 面板未展开说明没有待确认项（自动应用型面板已应用），不重开面板，避免多余刷新
+    const mounted = (await evaluateOnRecommendFrame(page, (frame) => frame.evaluate(
+      `(() => !!document.querySelector(".recommend-filter .filter-wrap"))`,
+    ))) as boolean;
+    if (!mounted) return false;
+  } else {
+    await openFilterPanel(page);
+  }
+  return evaluateOnRecommendFrame(page, async (frame) => {
+    return (await frame.evaluate(`((label) => {
+      const norm = (v) => (v ?? "").replace(/\s+/g, " ").trim();
+      const panel = document.querySelector(".recommend-filter");
+      if (!panel) return false;
+      const btn = [...panel.querySelectorAll("span, div, a, button")].find((el) => {
+        return norm(el.textContent) === label && el.offsetParent !== null;
+      });
+      if (!(btn instanceof HTMLElement)) return false;
+      btn.click();
+      return true;
+    })(${JSON.stringify(label)})`)) as boolean;
+  });
+}
+
+async function clickFilterOption(page: Page, groupTitle: string, label: string): Promise<'clicked' | 'active'> {
+  // 开面板与点选项解耦：面板意外关闭时重新打开再点；分组/选项挂载延迟属瞬态，重试同一选项
+  let lastResult = '';
+  for (let attempt = 0; attempt < 8; attempt++) {
+    if (attempt > 0) await sleepRandom(1500, 2500);
+    const result = (await evaluateOnRecommendFrame(page, async (frame) => {
+      return (await frame.evaluate(`((groupTitle, label) => {
+        const norm = (v) => (v ?? "").replace(/\s+/g, " ").trim();
+        // 分组未挂载 = 面板未展开（或展开中），点"筛选"切换展开
+        const group = [...document.querySelectorAll(".recommend-filter .filter-wrap")]
+          .find((g) => norm(g.querySelector(".name")?.textContent) === groupTitle);
+        if (!group) {
+          const entry = document.querySelector(".recommend-filter .filter-label");
+          if (entry instanceof HTMLElement) {
+            entry.scrollIntoView({ block: "center" });
+            entry.click();
+            return "panel-opening";
+          }
+          return "no-entry";
+        }
+        const opt = [...group.querySelectorAll(".option")].find((el) => norm(el.textContent) === label);
+        if (!opt) return "no-option";
+        if (/active/.test(opt.className)) return "active";
+        opt.scrollIntoView({ block: "center" });
+        opt.click();
+        return "clicked";
+      })(${JSON.stringify(groupTitle)}, ${JSON.stringify(label)})`)) as string;
+    }).catch((e: unknown) => {
+      lastResult = e instanceof Error ? e.message : String(e);
+      return 'evaluate-failed';
+    })) as string;
+    if (result === 'active') return 'active';
+    if (result === 'clicked') return 'clicked';
+    if (result === 'panel-opening') await sleepRandom(2000, 3000);
+    lastResult = result;
+  }
+  throw new Error(`BOSS 筛选选项点击未生效：${groupTitle}/${label}（最后状态：${lastResult}）`);
+}
+
+/**
+ * 按岗位配置操作推荐页 VIP 筛选面板（清除 → 逐项勾选 → 确定）。
+ * 选项点击可能触发 iframe 带参刷新：每次点击后重新定位 frame，选中态幂等跳过。
+ */
+export async function applyRecommendFilters(page: Page, filters: RecommendFilterOptions = {}): Promise<void> {
+  const gender = resolveRecommendGender(filters.gender);
+  const educationLabels = educationLabelsAtOrAbove(filters.minEducation);
+  const experienceLabels = resolveExperienceLabels(filters.experience);
+
+  const targets: Array<{ group: string; label: string }> = [];
+  if (gender) targets.push({ group: '性别', label: gender });
+  for (const label of educationLabels) targets.push({ group: '学历要求', label });
+  for (const label of experienceLabels) targets.push({ group: '经验要求', label });
+  if (targets.length === 0) return;
+
+  await clickPanelButton(page, '清除');
+  await sleepRandom(2000, 3200);
+
+  for (const target of targets) {
+    const result = await clickFilterOption(page, target.group, target.label);
+    if (result === 'clicked') await sleepRandom(2200, 3600);
+  }
+
+  const confirmed = await clickPanelButton(page, '确定');
+  // 确定/自动应用都会触发 iframe 刷新，等列表稳定后再返回
+  await sleepRandom(confirmed ? 3000 : 4500, confirmed ? 4500 : 6500);
+}
+
+
 export type RecommendCandidate = {
   geekId: string;
+  encryptJobId: string;
+  expectId: string;
+  lid: string;
+  securityId: string;
   name: string;
   salary: string;
   baseInfo: string;
@@ -111,7 +333,8 @@ async function waitForRecommendJobDropdownReady(frame: Frame): Promise<void> {
 
 async function waitForRecommendJobSearchResults(frame: Frame, keyword: string): Promise<void> {
   await frame.waitForFunction(
-    `((kw) => {
+    `(() => {
+      const kw = ${JSON.stringify(keyword)};
       const norm = (v) => (v ?? "").replace(/\\s+/g, "").trim().toLowerCase();
       const rows = Array.from(document.querySelectorAll(".job-selecter-options .job-list .job-item"));
       if (rows.length === 0) return false;
@@ -120,21 +343,20 @@ async function waitForRecommendJobSearchResults(frame: Frame, keyword: string): 
         const label = norm(el.querySelector(".label")?.textContent || el.textContent || "");
         return label.includes(norm(kw));
       });
-    })`,
+    })()`,
     { timeout: 10_000 },
-    keyword,
   );
 }
 
 async function waitForRecommendJobSelected(frame: Frame, expectedLabel: string): Promise<void> {
   await frame.waitForFunction(
-    `((label) => {
+    `(() => {
+      const label = ${JSON.stringify(expectedLabel)};
       const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
       const current = norm(document.querySelector(".job-selecter-wrap .ui-dropmenu-label")?.textContent);
       return !!current && current === label;
-    })`,
+    })()`,
     { timeout: 10_000 },
-    expectedLabel,
   );
   await ensureRecommendFrameReady(frame);
 }
@@ -234,9 +456,26 @@ export async function assertRecommendPageReadyForPreview(page: Page): Promise<Fr
 export async function readRecommendList(frame: Frame): Promise<RecommendCandidate[]> {
   return (await frame.evaluate(`(() => {
     const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
-    const cardSel = ${JSON.stringify(RECOMMEND_CARD_ROOT_SELECTOR)};
-    const cards = Array.from(document.querySelectorAll(cardSel));
-    return cards.map((item) => {
+    let cards = Array.from(document.querySelectorAll(".candidate-card-wrap"));
+    if (cards.length === 0) cards = Array.from(document.querySelectorAll(".card-list .card-item"));
+    if (cards.length === 0) cards = Array.from(document.querySelectorAll(".geek-list .geek-card"));
+
+    let pageList = [];
+    let node = cards[0] ?? null;
+    while (node && pageList.length === 0) {
+      let vm = node.__vue__;
+      while (vm) {
+        if (Array.isArray(vm.pageList$) && vm.pageList$.length > 0) {
+          pageList = vm.pageList$;
+          break;
+        }
+        vm = vm.$parent;
+      }
+      node = node.parentElement;
+    }
+
+    return cards.map((item, index) => {
+      const context = pageList[index] ?? {};
       const inner = item.querySelector(".card-inner") || item;
       const wrap = item.matches(".candidate-card-wrap")
         ? item
@@ -285,6 +524,10 @@ export async function readRecommendList(frame: Frame): Promise<RecommendCandidat
       })();
       return {
         geekId,
+        encryptJobId: String(context.encryptJobId ?? ""),
+        expectId: String(context.expectId ?? ""),
+        lid: String(context.lid ?? ""),
+        securityId: String(context.securityId ?? ""),
         name,
         salary,
         baseInfo,
@@ -354,9 +597,9 @@ export function renderRecommendList(candidates: RecommendCandidate[]): string {
 
 export async function clickGreet(
   frame: Frame,
-  target: string,
+  geekId: string,
 ): Promise<{ message: string }> {
-  const targetLiteral = JSON.stringify(target.trim());
+  const targetLiteral = JSON.stringify(geekId.trim());
   const result = (await frame.evaluate(
     `(() => {
       const raw = ${targetLiteral};
@@ -367,10 +610,9 @@ export async function clickGreet(
         return { kind: "empty" };
       }
       const targetCard = cards.find((item) => {
-        const name =
-          norm(item.querySelector(".name-wrap .name")?.textContent) ||
-          norm(item.querySelector(".name")?.textContent);
-        return name === raw || name.includes(raw);
+        const inner = item.querySelector(".card-inner") || item;
+        const id = inner?.getAttribute("data-geekid") ?? inner?.getAttribute("data-geek") ?? "";
+        return id === raw;
       }) ?? null;
       if (!targetCard) {
         return { kind: "not_found", target: raw };
@@ -408,14 +650,14 @@ export async function clickGreet(
     case 'empty':
       throw new Error('推荐列表为空，无法执行打招呼。');
     case 'not_found':
-      throw new Error(`未在推荐列表中找到目标：${result.target}`);
+      throw new Error(`未在推荐列表中找到 geekId：${result.target}`);
     case 'no_btn':
       throw new Error(`候选人 ${result.name} 缺少“打招呼”按钮，无法执行。`);
     case 'disabled':
       throw new Error(`候选人 ${result.name} 已打招呼。`);
     case 'clicked':
       return {
-        message: `已对 ${result.name} 点击“打招呼”。`,
+        message: `已对 ${result.name}（geekId=${result.geekId}）点击“打招呼”。`,
       };
     default: {
       const _x: never = result;
@@ -440,20 +682,24 @@ export function markGreetProduced(
  * 在推荐 iframe 内根据姓名打开在线简历预览：点击候选人卡片主体 `.card-inner`（与侧栏「打招呼」分离）。
  * 父页随后出现 `c-resume` iframe（如 `source=recommend`）。旧版仅有「在线简历」链接时仍尝试点击链接。
  */
-export async function openRecommendResumePreview(frame: Frame, target: string): Promise<boolean> {
+export async function openRecommendResumePreview(frame: Frame, target: string, matchByGeekId = false): Promise<boolean> {
   const raw = target.trim();
   const targetLiteral = JSON.stringify(raw);
+  const matchByGeekIdLiteral = JSON.stringify(matchByGeekId);
   const opened = (await frame.evaluate(`(() => {
     const raw = ${targetLiteral};
+    const matchByGeekId = ${matchByGeekIdLiteral};
     const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
     const cardSel = ${JSON.stringify(RECOMMEND_CARD_ROOT_SELECTOR)};
     const cards = Array.from(document.querySelectorAll(cardSel));
     if (cards.length === 0) return false;
     const targetCard = cards.find((item) => {
+      const inner = item.querySelector(".card-inner") || item;
+      const geekId = inner?.getAttribute("data-geekid") ?? inner?.getAttribute("data-geek") ?? "";
       const name =
         norm(item.querySelector(".name-wrap .name")?.textContent) ||
         norm(item.querySelector(".name")?.textContent);
-      return name === raw || name.includes(raw);
+      return matchByGeekId ? geekId === raw : name === raw || name.includes(raw);
     }) ?? null;
     if (!targetCard) return false;
 
@@ -493,14 +739,43 @@ export async function openRecommendResumePreview(frame: Frame, target: string): 
   return opened;
 }
 
-export async function runRecommend(jobKeyword?: string): Promise<string> {
+export async function runRecommend(jobKeyword?: string, filters?: RecommendFilterOptions): Promise<string> {
   try {
     return await withBossSessionPage(async (page) => {
       const frame = await ensureInRecommendPage(page);
-      const selectedJob = await selectRecommendJob(frame, (jobKeyword ?? '').trim());
-      const candidates = await readRecommendList(frame);
+      // 切岗位可能触发 iframe 带参刷新，detach 时自动换新 frame 重试
+      const selectedJob = await evaluateOnRecommendFrame(page, (readyFrame) => selectRecommendJob(readyFrame, (jobKeyword ?? '').trim()));
+      await applyRecommendFilters(page, filters);
+      // 筛选可能触发 iframe 带参刷新，读取前重新定位就绪的 frame
+      const candidates = await evaluateOnRecommendFrame(page, async (readyFrame) => {
+        await ensureRecommendFrameReady(readyFrame);
+        return readRecommendList(readyFrame);
+      });
       const title = selectedJob ? `当前岗位：${selectedJob}` : '当前岗位：默认';
       return [title, '', renderRecommendList(candidates)].join('\n');
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new Error(`读取推荐列表失败：${message}`);
+  }
+}
+
+/** 结构化推荐列表（供上层程序消费，含 geekId）。 */
+export async function runRecommendJson(
+  jobKeyword?: string,
+  filters?: RecommendFilterOptions,
+): Promise<{ job: string; candidates: RecommendCandidate[] }> {
+  try {
+    return await withBossSessionPage(async (page) => {
+      const frame = await ensureInRecommendPage(page);
+      // 切岗位可能触发 iframe 带参刷新，detach 时自动换新 frame 重试
+      const selectedJob = await evaluateOnRecommendFrame(page, (readyFrame) => selectRecommendJob(readyFrame, (jobKeyword ?? '').trim()));
+      await applyRecommendFilters(page, filters);
+      const candidates = await evaluateOnRecommendFrame(page, async (readyFrame) => {
+        await ensureRecommendFrameReady(readyFrame);
+        return readRecommendList(readyFrame);
+      });
+      return { job: selectedJob || '', candidates };
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

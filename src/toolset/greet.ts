@@ -13,12 +13,7 @@ import {
 } from '../common/boss_paywall_popup.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
 import {
-  clickGreetDeepSearch,
-  ensureInDeepSearchPage,
   isBossChatAiFormUrl,
-  readDeepSearchGeekList,
-  renderGeekListSection,
-  selectAiFormJob,
 } from './deep-search.js';
 import {
   clickGreet,
@@ -53,39 +48,86 @@ async function cleanupGreetModalIfPresent(page: Page): Promise<void> {
 }
 
 export type GreetOptions = {
-  candidateTarget: string;
+  candidateGeekId: string;
   jobKeyword?: string;
+  chatContext?: {
+    encryptJobId: string;
+    expectId: string;
+    lid: string;
+    securityId: string;
+  };
 };
 
+export function buildChatStartBody(
+  geekId: string,
+  context: NonNullable<GreetOptions['chatContext']>,
+): string {
+  return new URLSearchParams({
+    gid: geekId,
+    suid: '',
+    jid: context.encryptJobId,
+    expectId: context.expectId,
+    lid: context.lid,
+    greet: '',
+    from: '',
+    securityId: context.securityId,
+    customGreetingGuide: '-1',
+  }).toString();
+}
+
+async function startChatByGeekId(
+  page: Page,
+  geekId: string,
+  context: NonNullable<GreetOptions['chatContext']>,
+): Promise<string> {
+  const body = buildChatStartBody(geekId, context);
+  const result = (await page.evaluate(`(async () => {
+    const response = await fetch("/wapi/zpjob/chat/start", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "x-requested-with": "XMLHttpRequest"
+      },
+      body: ${JSON.stringify(body)}
+    });
+    return { status: response.status, text: await response.text() };
+  })()`)) as { status: number; text: string };
+
+  if (result.status < 200 || result.status >= 300) {
+    throw new Error(`BOSS 发起沟通接口返回 HTTP ${result.status}`);
+  }
+  let data: any;
+  try {
+    data = JSON.parse(result.text);
+  } catch {
+    throw new Error(`BOSS 发起沟通接口返回非 JSON：${result.text.slice(0, 120)}`);
+  }
+  if (typeof data?.code === 'number' && data.code !== 0) {
+    throw new Error(data.message || data.msg || `BOSS 发起沟通失败（code=${data.code}）`);
+  }
+  return `已按 geekId=${geekId} 发起沟通。`;
+}
+
 export async function runRecommendGreet(options: GreetOptions): Promise<string> {
-  const t = options.candidateTarget.trim();
+  const t = options.candidateGeekId.trim();
   const kw = (options.jobKeyword ?? '').trim();
   if (!t) {
-    throw new Error('请提供打招呼目标（姓名）。');
+    throw new Error('请提供候选人 geekId。');
   }
   try {
     return await withBossSessionPage(async (page) => {
       await closeBossModalIfPresent(page);
+      if (options.chatContext) {
+        const message = await startChatByGeekId(page, t, options.chatContext);
+        await assertNoGreetPaywallPopup(page);
+        await cleanupGreetModalIfPresent(page);
+        return message;
+      }
       const url = page.url();
       if (isBossChatAiFormUrl(url)) {
-        await ensureInDeepSearchPage(page);
-        let jobLine = '';
-        if (kw) {
-          const label = await selectAiFormJob(page, kw);
-          await ensureInDeepSearchPage(page);
-          jobLine = `当前岗位：${label}`;
-        }
-        const greetResult = await clickGreetDeepSearch(page, t);
-        await assertNoGreetPaywallPopup(page);
-        await sleepRandom(380, 1000);
-        const after = await readDeepSearchGeekList(page);
-        await cleanupGreetModalIfPresent(page);
-        const lines = [greetResult.message];
-        if (jobLine) {
-          lines.unshift(jobLine);
-        }
-        lines.push('', '当前深度搜索列表：', renderGeekListSection('深度搜索匹配结果', after));
-        return lines.join('\n');
+        throw new Error('深度搜索按 geekId 打招呼需要完整 chatContext，禁止按姓名定位。');
       }
 
       const frame = await assertRecommendPageReady(page, '打招呼');
@@ -109,7 +151,7 @@ export async function runRecommendGreet(options: GreetOptions): Promise<string> 
       } finally {
         await resumeHeight(page, savedViewport);
       }
-    }, { ensureChatShell: false, ensureMenuList: false });
+    }, options.chatContext ? {} : { ensureChatShell: false, ensureMenuList: false });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     throw new Error(`执行打招呼失败：${message}`);

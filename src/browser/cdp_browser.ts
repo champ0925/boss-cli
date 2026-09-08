@@ -41,8 +41,9 @@ export function wasLastChromeLaunchHeadless(): boolean {
  * 探测固定调试端口上是否已有在跑的 Chrome：直接命中 `/json/version` 拿当前
  * `webSocketDebuggerUrl`，避免依赖 `DevToolsActivePort` 这种二级状态文件
  * （可能被陈旧/清理/路径 UUID 漂移影响）。命中即可复用，未命中表示需要 spawn。
+ * `boss status` 等只读路径也用它判断浏览器是否在跑（未命中时绝不拉起新实例）。
  */
-async function probeRemoteDebuggingWsEndpoint(
+export async function probeRemoteDebuggingWsEndpoint(
   port: number,
   timeoutMs: number,
 ): Promise<string | undefined> {

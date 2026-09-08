@@ -10,16 +10,19 @@ import {
   implCheckLoginStatus,
   implLogin,
   implListCandidates,
+  implListCandidatesJson,
   implListUnreadCandidates,
   implListResumeCandidates,
   implListCandidatesByCategory,
   implOpenChatByIndex,
+  implOpenChatByUid,
   implListPositions,
   implListPositionsWithOptions,
   implNormalSearch,
   implOpenChat,
   implOpenChatJson,
   implRecommend,
+  implRecommendJson,
   implPreview,
   implRecommendGreet,
   implSetBaiduCredentials,
@@ -154,37 +157,40 @@ function printHelp(): void {
   boss list [--unread] [--resume] [--category <分类名>]
       读取聊天列表候选人；--unread 仅显示未读（角标>0）；--resume 切换「已获取简历」分类（平台准确分类）
       --category 切换任意分类，如 沟通中/已约面/已交换电话/已交换微信/收藏/新招呼（按页面显示文案匹配）
-  boss chat <姓名> [--strict] [--json]
+  boss chat <姓名> [--strict] [--json] [--uid <encryptUid|uniqueId|friendId>]
       打开指定联系人会话；默认包含匹配，--strict 为精确匹配
-      --json 输出结构化聊天详情（姓名/职位/消息数组等），供 messages 表写入，而非人类可读文本
+      --uid 支持 encryptUid（会轮换，经身份接口解析）/ uniqueId（friendId-source，按 data-id 精确匹配）/ friendId（按 data-id 前缀匹配）
+      --json 输出结构化聊天详情（姓名/职位/消息数组/沟通身份 friendId 等），供 messages 表写入，而非人类可读文本
   boss chat [姓名] --index <序号> [--unread] [--strict]
       按 boss list 输出的 1-based 序号打开会话；--unread 表示序号对应 boss list --unread
       同时提供姓名时会校验该序号候选人姓名，--strict 表示精确校验
       仅用于已建立联系的候选人（即在 list 里可见的会话对象）
-  boss action <操作> [--remark <备注>] [--out <目录>]
+  boss action <操作> [--remark <备注>] [--out <目录>] [--uid <encryptUid>]
       仅在当前聊天页已打开候选人详情时执行操作，并只返回 action 执行结果
       操作: resume | not-fit | remark | agree-resume | request-attachment-resume | download-resume | history | wechat
       request-attachment-resume：工具栏「求简历」，确认后向对方发送默认话术索要附件简历（需双方各至少发过一条消息）
       download-resume：下载对方已发送且我方已同意的附件简历，默认保存到 resumes/<日期>/attachments/，可用 --out 指定目录
       操作为 remark 时必须提供 --remark
-  boss send [--text <内容>] [-t <内容>] [--request-resume]
+  boss send [--text <内容>] [-t <内容>] [--request-resume] [--uid <encryptUid>]
       仅发送文本消息（等价于在当前会话输入框发送后回车）
       --request-resume：发送后延迟片刻自动执行「求简历」操作
   boss positions
       读取当前职位列表（含开放/待开放/已关闭状态）
   boss jd <name>
       抓取指定职位详情并缓存到项目目录同名 .md
-  boss recommend [岗位关键字]
-      进入推荐页并读取推荐列表；带岗位关键字时先在岗位下拉中模糊匹配并切换
+  boss recommend [岗位关键字] [--gender 男|女] [--min-education 本科] [--experience 3-5年] [--json]
+      进入推荐页并读取推荐列表；带岗位关键字时先在岗位下拉中模糊匹配并切换；--json 输出结构化数据（含 geekId）。
+      可选筛选（走推荐页 VIP 筛选面板，需 VIP）：--gender 男/女；--min-education 自动勾选更高学历；--experience 档位逗号多选：1年以内/1-3年/3-5年/5-10年/10年以上
   boss search [关键词]
       进入「搜索」页并读取 Boss 默认常规搜索结果；带关键词时填入搜索框并回车搜索
   boss preview <姓名>
       在线简历预览：须当前已在「推荐」(/web/chat/recommend)、「深度搜索」(/web/chat/aiform) 或「常规搜索」(/web/chat/search) 且列表已加载；不会自动跳转
+      自动流程可用 --geek-id <ID> --name <姓名> [--job <岗位>] 从推荐页按候选人 ID 精确打开
       注意：平台对在线简历每日可查看次数有限，请按需使用、谨慎查看
-  boss greet <姓名> [--job <岗位关键字>]
-      须当前已在「推荐」(/web/chat/recommend) 或「深度搜索」(/web/chat/aiform) 且列表已加载；不会自动跳转
-      对当前列表中的候选人点击“打招呼”
-      可选 --job 先在岗位下拉中模糊匹配并切换（与 recommend 共用同一套选择逻辑）
+  boss greet <geekId> [--job <岗位关键字>] [--job-id <加密岗位ID> --expect-id <期望ID> --lid <来源ID> --security-id <安全ID>]
+      使用候选人 geekId 精确打招呼，不再按姓名匹配
+      提供完整上下文参数时直接调用发起沟通接口，推荐列表刷新后仍可执行
+      仅传 geekId 时要求当前推荐列表仍包含该候选人卡片；可选 --job 先切换岗位
       会消耗打招呼次数且单次成本较高，请谨慎使用
   boss deep-search [岗位关键字] [--job <岗位关键字>] [--core <核心要求>] [--bonus <加分项>] [--clear-core] [--clear-bonus] [--match]
       进入「深度搜索」页并输出当前表单、剩余匹配次数和按钮状态；--core/--bonus 可重复，并按传入列表同步对应分组；--clear-* 清空对应分组
@@ -421,6 +427,17 @@ export async function executeCommand(argv: string[]): Promise<string> {
 
   if (cmd === 'list') {
     const { flags, opts } = parseOpts(tail);
+    if (flags.has('json')) {
+      const unsupported = [...flags].filter((flag) => !['json', 'unread', 'resume'].includes(flag));
+      if (unsupported.length > 0) die(`❌ list 不支持参数: --${unsupported.join(', --')}`);
+      const picked = [flags.has('unread'), flags.has('resume'), !!opts.category].filter(Boolean).length;
+      if (picked > 1) die('❌ --unread、--resume、--category 三者只能用一个。');
+      return implListCandidatesJson({
+        unreadOnly: flags.has('unread'),
+        resumeOnly: flags.has('resume'),
+        category: opts.category,
+      });
+    }
     const category = (opts.category ?? '').trim();
     const picked = [flags.has('unread'), flags.has('resume'), !!category].filter(Boolean).length;
     if (picked > 1) {
@@ -444,7 +461,7 @@ export async function executeCommand(argv: string[]): Promise<string> {
     if ((opts.action ?? '').trim().length > 0 || (opts.remark ?? '').trim().length > 0) {
       die('❌ chat 不再支持 --action/--remark。请改用: action <操作> [--remark <备注>]');
     }
-    const allowedOpts = new Set(['index', 'i', 'action', 'remark']);
+    const allowedOpts = new Set(['index', 'i', 'action', 'remark', 'uid', 'filter']);
     const unsupportedOpts = Object.keys(opts).filter((key) => !allowedOpts.has(key));
     if (unsupportedOpts.length > 0) {
       die(`❌ chat 不支持参数: --${unsupportedOpts.join(', --')}`);
@@ -452,6 +469,17 @@ export async function executeCommand(argv: string[]): Promise<string> {
     // 默认模糊匹配（包含）；仅在指定 --strict 时做精确匹配
     const exact = flags.has('strict');
     const indexRaw = (opts.index ?? opts.i ?? '').trim();
+    const uid = (opts.uid ?? '').trim();
+    if (uid && indexRaw) die('❌ chat 不能同时使用 --uid 和 --index。');
+    if (uid) {
+      if (rest.length > 0 || flags.has('unread')) die('❌ chat --uid 不接受姓名或 --unread。');
+      const filter = (opts.filter ?? '').trim() || undefined;
+      if (flags.has('json')) {
+        const detail = await implOpenChatByUid(uid, true, filter);
+        return JSON.stringify(detail, null, 2);
+      }
+      return implOpenChatByUid(uid, false, filter);
+    }
     if (indexRaw) {
       const index = Number(indexRaw);
       if (!Number.isInteger(index) || index < 1) {
@@ -507,7 +535,8 @@ export async function executeCommand(argv: string[]): Promise<string> {
       die('❌ 当操作为 remark 时，必须提供 --remark <备注内容>。');
     }
     const outDir = (opts.out ?? opts['out-dir'] ?? '').trim();
-    return implChatAction({ action, remark, outDir: outDir || undefined });
+    const uid = (opts.uid ?? '').trim();
+    return implChatAction({ action, remark, outDir: outDir || undefined, encryptUid: uid || undefined });
   }
 
   if (cmd === 'send') {
@@ -517,7 +546,8 @@ export async function executeCommand(argv: string[]): Promise<string> {
       die('❌ 用法: send [--text <消息>] [-t <消息>] [--request-resume]');
     }
     const requestResume = flags.has('request-resume');
-    return implSendMessage({ text, requestResume });
+    const uid = (opts.uid ?? '').trim();
+    return implSendMessage({ text, requestResume, encryptUid: uid || undefined });
   }
 
   if (cmd === 'positions') {
@@ -566,15 +596,15 @@ export async function executeCommand(argv: string[]): Promise<string> {
     if (flags.size > 0) {
       die('❌ preview 不支持该 flag');
     }
-    const unsupportedOpts = Object.keys(opts);
+    const unsupportedOpts = Object.keys(opts).filter((x) => x !== 'geek-id' && x !== 'name' && x !== 'job');
     if (unsupportedOpts.length > 0) {
       die(`❌ preview 不支持: --${unsupportedOpts[0]}`);
     }
-    const candidateTarget = rest.join(' ').trim();
+    const candidateTarget = (opts.name || rest.join(' ')).trim();
     if (!candidateTarget) {
-      die('❌ 用法: preview <姓名>');
+      die('❌ 用法: preview <姓名> 或 preview --geek-id <ID> --name <姓名> [--job <岗位>]');
     }
-    return implPreview({ candidateTarget });
+    return implPreview({ candidateTarget, candidateGeekId: opts['geek-id'], jobKeyword: opts.job });
   }
 
   if (cmd === 'recommend') {
@@ -582,28 +612,57 @@ export async function executeCommand(argv: string[]): Promise<string> {
     if (rest[0] === 'preview') {
       die('❌ 请改用: boss preview <姓名>（已不再使用 recommend preview）');
     }
-    if (Object.keys(opts).length > 0 || flags.size > 0) {
-      die('❌ 用法: recommend [岗位关键字]');
+    const allowedOpts = new Set(['gender', 'min-education', 'experience']);
+    const extraOpts = Object.keys(opts).filter((k) => !allowedOpts.has(k));
+    if (extraOpts.length > 0 || [...flags].some((f) => f !== 'json')) {
+      die('❌ 用法: recommend [岗位关键字] [--gender 男|女] [--min-education 本科] [--experience 3-5年] [--json]');
     }
     const jobKeyword = rest.join(' ').trim();
-    return implRecommend(jobKeyword || undefined);
+    const filters = {
+      gender: opts.gender?.trim() || undefined,
+      minEducation: opts['min-education']?.trim() || undefined,
+      experience: opts.experience?.trim() || undefined,
+    };
+    const hasFilters = Boolean(filters.gender || filters.minEducation || filters.experience);
+    if (flags.has('json')) {
+      return implRecommendJson(jobKeyword || undefined, hasFilters ? filters : undefined);
+    }
+    return implRecommend(jobKeyword || undefined, hasFilters ? filters : undefined);
   }
 
   if (cmd === 'greet') {
     const { rest, opts, flags } = parseOpts(tail);
     if (flags.size > 0) {
-      die('❌ 用法: greet <姓名> [--job <岗位关键字>]');
+      die('❌ 用法: greet <geekId> [--job <岗位关键字>] [--job-id <ID> --expect-id <ID> --lid <ID> --security-id <ID>]');
     }
     const jobKeyword = opts.job?.trim();
-    const extraOpts = Object.keys(opts).filter((k) => k !== 'job');
+    const allowed = new Set(['job', 'job-id', 'expect-id', 'lid', 'security-id']);
+    const extraOpts = Object.keys(opts).filter((k) => !allowed.has(k));
     if (extraOpts.length > 0) {
-      die('❌ 用法: greet <姓名> [--job <岗位关键字>]');
+      die('❌ 用法: greet <geekId> [--job <岗位关键字>] [--job-id <ID> --expect-id <ID> --lid <ID> --security-id <ID>]');
     }
-    const target = rest.join(' ').trim();
-    if (!target) {
-      die('❌ 用法: greet <姓名> [--job <岗位关键字>]');
+    const geekId = rest.join(' ').trim();
+    if (!geekId) {
+      die('❌ 用法: greet <geekId> [--job <岗位关键字>] [--job-id <ID> --expect-id <ID> --lid <ID> --security-id <ID>]');
     }
-    return implRecommendGreet({ candidateTarget: target, jobKeyword: jobKeyword || undefined });
+    const contextValues = [opts['job-id'], opts['expect-id'], opts.lid, opts['security-id']];
+    const hasAnyContext = contextValues.some((value) => !!value?.trim());
+    const hasFullContext = contextValues.every((value) => !!value?.trim());
+    if (hasAnyContext && !hasFullContext) {
+      die('❌ 直接按 ID 发起沟通时必须同时提供 --job-id、--expect-id、--lid、--security-id');
+    }
+    return implRecommendGreet({
+      candidateGeekId: geekId,
+      jobKeyword: jobKeyword || undefined,
+      chatContext: hasFullContext
+        ? {
+            encryptJobId: opts['job-id']!.trim(),
+            expectId: opts['expect-id']!.trim(),
+            lid: opts.lid!.trim(),
+            securityId: opts['security-id']!.trim(),
+          }
+        : undefined,
+    });
   }
 
   die(`❌ 未知命令 “${argv[0]}”。输入 help 查看用法。`);
