@@ -23,6 +23,47 @@ export function parseBossChatUniqueId(uniqueId: string): {
 }
 
 /**
+ * 全量好友 uniqueId 集合（filterByLabel labelId=0，即沟通列表全部分类的好友）。
+ * 用途：打招呼前后各取一次做差集，唯一新增项就是刚建立沟通的人（geekId → friendId 映射）。
+ * 与页面列表请求保持一致：表单编码 POST，labelId=0&encJobId=&sort=&scene=0。
+ */
+export async function fetchBossAllFriendUniqueIds(page: Page): Promise<Set<string>> {
+  const result = (await page.evaluate(`(async () => {
+    const response = await fetch("/wapi/zprelation/friend/filterByLabel", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: "labelId=0&encJobId=&sort=&scene=0"
+    });
+    return { status: response.status, text: await response.text() };
+  })()`)) as { status: number; text: string };
+
+  if (result.status < 200 || result.status >= 300) {
+    throw new Error(`BOSS 好友列表接口返回 HTTP ${result.status}`);
+  }
+  let data: any;
+  try {
+    data = JSON.parse(result.text);
+  } catch {
+    throw new Error(`BOSS 好友列表接口返回非 JSON：${result.text.slice(0, 120)}`);
+  }
+  if (typeof data?.code === 'number' && data.code !== 0) {
+    throw new Error(data.message || data.msg || `BOSS 好友列表接口失败（code=${data.code}）`);
+  }
+  const rows = Array.isArray(data?.zpData?.result) ? data.zpData.result : [];
+  const ids = new Set<string>();
+  for (const row of rows) {
+    const friendId = Number(row?.friendId ?? 0);
+    const friendSource = Number(row?.friendSource ?? 0);
+    if (friendId > 0) ids.add(`${friendId}-${friendSource}`);
+  }
+  return ids;
+}
+
+/**
  * 沟通列表 DOM 只暴露 friendId-source；通过 BOSS 列表详情接口换取 encryptUid。
  * 调用方必须使用返回的 encryptUid 精确匹配，不允许按姓名代替。
  */

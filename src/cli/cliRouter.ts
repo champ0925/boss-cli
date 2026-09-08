@@ -187,10 +187,12 @@ function printHelp(): void {
       在线简历预览：须当前已在「推荐」(/web/chat/recommend)、「深度搜索」(/web/chat/aiform) 或「常规搜索」(/web/chat/search) 且列表已加载；不会自动跳转
       自动流程可用 --geek-id <ID> --name <姓名> [--job <岗位>] 从推荐页按候选人 ID 精确打开
       注意：平台对在线简历每日可查看次数有限，请按需使用、谨慎查看
-  boss greet <geekId> [--job <岗位关键字>] [--job-id <加密岗位ID> --expect-id <期望ID> --lid <来源ID> --security-id <安全ID>]
+  boss greet <geekId> [--job <岗位关键字>] [--json] [--job-id <加密岗位ID> --expect-id <期望ID> --lid <来源ID> --security-id <安全ID>]
       使用候选人 geekId 精确打招呼，不再按姓名匹配
       提供完整上下文参数时直接调用发起沟通接口，推荐列表刷新后仍可执行
       仅传 geekId 时要求当前推荐列表仍包含该候选人卡片；可选 --job 先切换岗位
+      打招呼前后自动对全量好友做差集，唯一新增好友即该候选人（--json 输出 newFriend 含 friendId/uniqueId）；
+      好友基线拉取失败时不执行打招呼，避免产生无法映射身份的沟通记录
       会消耗打招呼次数且单次成本较高，请谨慎使用
   boss deep-search [岗位关键字] [--job <岗位关键字>] [--core <核心要求>] [--bonus <加分项>] [--clear-core] [--clear-bonus] [--match]
       进入「深度搜索」页并输出当前表单、剩余匹配次数和按钮状态；--core/--bonus 可重复，并按传入列表同步对应分组；--clear-* 清空对应分组
@@ -632,18 +634,19 @@ export async function executeCommand(argv: string[]): Promise<string> {
 
   if (cmd === 'greet') {
     const { rest, opts, flags } = parseOpts(tail);
-    if (flags.size > 0) {
-      die('❌ 用法: greet <geekId> [--job <岗位关键字>] [--job-id <ID> --expect-id <ID> --lid <ID> --security-id <ID>]');
+    const unknownFlags = [...flags].filter((f) => f !== 'json');
+    if (unknownFlags.length > 0) {
+      die('❌ 用法: greet <geekId> [--job <岗位关键字>] [--json] [--job-id <ID> --expect-id <ID> --lid <ID> --security-id <ID>]');
     }
     const jobKeyword = opts.job?.trim();
     const allowed = new Set(['job', 'job-id', 'expect-id', 'lid', 'security-id']);
     const extraOpts = Object.keys(opts).filter((k) => !allowed.has(k));
     if (extraOpts.length > 0) {
-      die('❌ 用法: greet <geekId> [--job <岗位关键字>] [--job-id <ID> --expect-id <ID> --lid <ID> --security-id <ID>]');
+      die('❌ 用法: greet <geekId> [--job <岗位关键字>] [--json] [--job-id <ID> --expect-id <ID> --lid <ID> --security-id <ID>]');
     }
     const geekId = rest.join(' ').trim();
     if (!geekId) {
-      die('❌ 用法: greet <geekId> [--job <岗位关键字>] [--job-id <ID> --expect-id <ID> --lid <ID> --security-id <ID>]');
+      die('❌ 用法: greet <geekId> [--job <岗位关键字>] [--json] [--job-id <ID> --expect-id <ID> --lid <ID> --security-id <ID>]');
     }
     const contextValues = [opts['job-id'], opts['expect-id'], opts.lid, opts['security-id']];
     const hasAnyContext = contextValues.some((value) => !!value?.trim());
@@ -654,6 +657,7 @@ export async function executeCommand(argv: string[]): Promise<string> {
     return implRecommendGreet({
       candidateGeekId: geekId,
       jobKeyword: jobKeyword || undefined,
+      json: flags.has('json'),
       chatContext: hasFullContext
         ? {
             encryptJobId: opts['job-id']!.trim(),

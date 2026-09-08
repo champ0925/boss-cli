@@ -187,6 +187,7 @@ export async function implPreview(opts: {
 export async function implRecommendGreet(opts: {
   candidateGeekId: string;
   jobKeyword?: string;
+  json?: boolean;
   chatContext?: {
     encryptJobId: string;
     expectId: string;
@@ -194,7 +195,11 @@ export async function implRecommendGreet(opts: {
     securityId: string;
   };
 }): Promise<string> {
-  return runRecommendGreet(opts);
+  const result = await runRecommendGreet(opts);
+  if (opts.json) {
+    return JSON.stringify({ message: result.text, newFriend: result.newFriend ?? null }, null, 2);
+  }
+  return result.text;
 }
 
 export { implSetBaiduCredentials } from './baidu_credentials.js';

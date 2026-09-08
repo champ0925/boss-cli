@@ -16,6 +16,10 @@ import {
   isBossChatAiFormUrl,
 } from './deep-search.js';
 import {
+  fetchBossAllFriendUniqueIds,
+  parseBossChatUniqueId,
+} from './chat-identity.js';
+import {
   clickGreet,
   assertRecommendPageReady,
   markGreetProduced,
@@ -57,6 +61,37 @@ export type GreetOptions = {
     securityId: string;
   };
 };
+
+/** 打招呼结果：text 为人类可读摘要；newFriend 为好友差集捕获的新沟通身份（geekId → friendId 映射） */
+export type GreetResult = {
+  text: string;
+  newFriend?: {
+    uniqueId: string;
+    friendId: number;
+    friendSource: number;
+  };
+};
+
+/**
+ * 打招呼成功后重取全量好友做差集：恰好 1 个新增才返回。
+ * 0 个 = 二次沟通（不新增好友）或关系尚未建立；>1 个 = 期间发生了其他沟通，均不猜测。
+ * 接口有传播延迟，差集为空时等待后重取一次。
+ */
+async function diffNewFriendUniqueId(
+  page: Page,
+  before: Set<string>,
+): Promise<GreetResult['newFriend']> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await sleepRandom(1200, 2200);
+    const after = await fetchBossAllFriendUniqueIds(page);
+    const added = [...after].filter((id) => !before.has(id));
+    if (added.length !== 1) continue;
+    const parsed = parseBossChatUniqueId(added[0]);
+    if (!parsed) return undefined;
+    return { uniqueId: added[0], friendId: parsed.friendId, friendSource: parsed.friendSource };
+  }
+  return undefined;
+}
 
 export function buildChatStartBody(
   geekId: string,
@@ -110,7 +145,7 @@ async function startChatByGeekId(
   return `已按 geekId=${geekId} 发起沟通。`;
 }
 
-export async function runRecommendGreet(options: GreetOptions): Promise<string> {
+export async function runRecommendGreet(options: GreetOptions): Promise<GreetResult> {
   const t = options.candidateGeekId.trim();
   const kw = (options.jobKeyword ?? '').trim();
   if (!t) {
@@ -119,38 +154,52 @@ export async function runRecommendGreet(options: GreetOptions): Promise<string> 
   try {
     return await withBossSessionPage(async (page) => {
       await closeBossModalIfPresent(page);
+      // 打招呼前抓全量好友基线，用于事后差集定位新沟通对象。
+      // 基线拿不到则不执行打招呼：没有差集就无法建立 geekId→friendId 映射，会产生重复档案。
+      const friendsBefore = await fetchBossAllFriendUniqueIds(page);
+      let text: string;
       if (options.chatContext) {
         const message = await startChatByGeekId(page, t, options.chatContext);
         await assertNoGreetPaywallPopup(page);
         await cleanupGreetModalIfPresent(page);
-        return message;
-      }
-      const url = page.url();
-      if (isBossChatAiFormUrl(url)) {
-        throw new Error('深度搜索按 geekId 打招呼需要完整 chatContext，禁止按姓名定位。');
-      }
+        text = message;
+      } else {
+        const url = page.url();
+        if (isBossChatAiFormUrl(url)) {
+          throw new Error('深度搜索按 geekId 打招呼需要完整 chatContext，禁止按姓名定位。');
+        }
 
-      const frame = await assertRecommendPageReady(page, '打招呼');
-      const selectedJob = await selectRecommendJob(frame, kw);
-      const jobLine = selectedJob ? `当前岗位：${selectedJob}` : '当前岗位：默认';
-      const savedViewport = await snapshotBossPageViewport(page);
-      try {
-        await setTempHeight(page, savedViewport, RECOMMEND_GREET_EXPAND_HEIGHT_PX);
-        await sleepRandom(
-          RECOMMEND_GREET_EXPAND_SETTLE_MS.min,
-          RECOMMEND_GREET_EXPAND_SETTLE_MS.max,
-        );
-        const before = await readRecommendList(frame);
-        const greetResult = await clickGreet(frame, t);
-        await assertNoGreetPaywallPopup(page);
-        await sleepRandom(380, 1000);
-        const after = await readRecommendList(frame);
-        markGreetProduced(before, after);
-        await cleanupGreetModalIfPresent(page);
-        return [jobLine, greetResult.message, '', '当前推荐列表（来源分组）：', renderRecommendList(after)].join('\n');
-      } finally {
-        await resumeHeight(page, savedViewport);
+        const frame = await assertRecommendPageReady(page, '打招呼');
+        const selectedJob = await selectRecommendJob(frame, kw);
+        const jobLine = selectedJob ? `当前岗位：${selectedJob}` : '当前岗位：默认';
+        const savedViewport = await snapshotBossPageViewport(page);
+        try {
+          await setTempHeight(page, savedViewport, RECOMMEND_GREET_EXPAND_HEIGHT_PX);
+          await sleepRandom(
+            RECOMMEND_GREET_EXPAND_SETTLE_MS.min,
+            RECOMMEND_GREET_EXPAND_SETTLE_MS.max,
+          );
+          const before = await readRecommendList(frame);
+          const greetResult = await clickGreet(frame, t);
+          await assertNoGreetPaywallPopup(page);
+          await sleepRandom(380, 1000);
+          const after = await readRecommendList(frame);
+          markGreetProduced(before, after);
+          await cleanupGreetModalIfPresent(page);
+          text = [jobLine, greetResult.message, '', '当前推荐列表（来源分组）：', renderRecommendList(after)].join('\n');
+        } finally {
+          await resumeHeight(page, savedViewport);
+        }
       }
+      // 打招呼已发出：差集失败只影响身份映射，输出中明示，不让动作整体失败导致重复打招呼
+      let newFriend: GreetResult['newFriend'];
+      try {
+        newFriend = await diffNewFriendUniqueId(page, friendsBefore);
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        text += `\n（好友差集捕获失败：${reason}；该人 friendId 未映射，后续以沟通同步为准）`;
+      }
+      return { text, ...(newFriend ? { newFriend } : {}) };
     }, options.chatContext ? {} : { ensureChatShell: false, ensureMenuList: false });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
