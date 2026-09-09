@@ -229,7 +229,10 @@ export async function applyRecommendFilters(page: Page, filters: RecommendFilter
 
 
 export type RecommendCandidate = {
+  /** 数字用户 ID，与沟通列表中的 friendId 相同，用于认人和去重 */
   geekId: string;
+  /** 推荐/打招呼接口使用的加密用户 ID */
+  encryptGeekId: string;
   encryptJobId: string;
   expectId: string;
   lid: string;
@@ -484,10 +487,11 @@ export async function readRecommendList(frame: Frame): Promise<RecommendCandidat
         (wrap && wrap.classList.contains("has-viewed")) ||
           (inner && inner.classList.contains("has-viewed")),
       );
-      const geekId =
+      const encryptGeekId =
         inner?.getAttribute("data-geekid") ??
         inner?.getAttribute("data-geek") ??
         "";
+      const geekId = context.geekId == null ? "" : String(context.geekId).trim();
       const name =
         norm(item.querySelector(".name-wrap .name")?.textContent) ||
         norm(item.querySelector(".name")?.textContent);
@@ -524,6 +528,7 @@ export async function readRecommendList(frame: Frame): Promise<RecommendCandidat
       })();
       return {
         geekId,
+        encryptGeekId,
         encryptJobId: String(context.encryptJobId ?? ""),
         expectId: String(context.expectId ?? ""),
         lid: String(context.lid ?? ""),
@@ -609,10 +614,26 @@ export async function clickGreet(
       if (cards.length === 0) {
         return { kind: "empty" };
       }
+      let pageList = [];
+      let node = cards[0] ?? null;
+      while (node && pageList.length === 0) {
+        let vm = node.__vue__;
+        while (vm) {
+          if (Array.isArray(vm.pageList$) && vm.pageList$.length > 0) {
+            pageList = vm.pageList$;
+            break;
+          }
+          vm = vm.$parent;
+        }
+        node = node.parentElement;
+      }
       const targetCard = cards.find((item) => {
         const inner = item.querySelector(".card-inner") || item;
-        const id = inner?.getAttribute("data-geekid") ?? inner?.getAttribute("data-geek") ?? "";
-        return id === raw;
+        const encrypted = inner?.getAttribute("data-geekid") ?? inner?.getAttribute("data-geek") ?? "";
+        const context = pageList.find((x) =>
+          String(x.encryptGeekId ?? x.encGeekId ?? "").trim() === encrypted,
+        );
+        return encrypted === raw || String(context?.geekId ?? "").trim() === raw;
       }) ?? null;
       if (!targetCard) {
         return { kind: "not_found", target: raw };
@@ -622,10 +643,14 @@ export async function clickGreet(
         norm(targetCard.querySelector(".name-wrap .name")?.textContent) ||
         norm(targetCard.querySelector(".name")?.textContent);
       const inner = targetCard.querySelector(".card-inner") || targetCard;
-      const geekId =
+      const encryptGeekId =
         inner?.getAttribute("data-geekid") ??
         inner?.getAttribute("data-geek") ??
         "";
+      const context = pageList.find((x) =>
+        String(x.encryptGeekId ?? x.encGeekId ?? "").trim() === encryptGeekId,
+      );
+      const geekId = String(context?.geekId ?? raw).trim();
       const btn = targetCard.querySelector(".button-chat-wrap .btn.btn-greet");
       if (!(btn instanceof HTMLElement)) {
         return { kind: "no_btn", name };
@@ -782,4 +807,3 @@ export async function runRecommendJson(
     throw new Error(`读取推荐列表失败：${message}`);
   }
 }
-
