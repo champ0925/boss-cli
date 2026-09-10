@@ -6,6 +6,7 @@ export type BossChatIdentity = {
   friendSource: number;
   encryptUid: string;
   encryptJobId: string;
+  expectId?: string;
   securityId: string;
   name: string;
   jobName: string;
@@ -157,6 +158,7 @@ export async function fetchBossChatIdentities(
         friendSource,
         encryptUid,
         encryptJobId: String(row.encryptJobId ?? '').trim(),
+        expectId: String(row.expectId ?? '').trim(),
         securityId: String(row.securityId ?? '').trim(),
         name: String(row.name ?? '').trim(),
         jobName: String(row.jobName ?? row.job?.jobName ?? '').trim(),

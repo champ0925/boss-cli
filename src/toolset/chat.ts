@@ -1,4 +1,5 @@
 import type { Page } from 'puppeteer-core';
+import { readOnlineResumeState, readAttachmentStates } from './resume-state.js';
 import {
   CHAT_HISTORY_DIALOG_WAIT_MS,
   CHAT_HISTORY_TAB_SWITCH_MS,
@@ -271,6 +272,8 @@ export type BossChatMessage = {
 
 /** 结构化聊天详情（供 --json 输出 / messages 表写入）。 */
 export type BossChatDetail = {
+  onlineResume?: { fingerprint?: string; checkedAt?: string; error?: string };
+  attachments?: Array<{ attachmentId: string; messageId: string; sentAt: number | null }>;
   encryptUid?: string;                // BOSS 沟通身份标识（会轮换，仅用于定位会话）
   uniqueId?: string;                  // 沟通列表行稳定标识（friendId-friendSource）
   friendId?: number;                  // BOSS 稳定联系人 ID（候选人主认人键）
@@ -1167,6 +1170,7 @@ async function resolveChatIdentityForJson(
     friendSource: parsed.friendSource,
     encryptUid: enriched?.encryptUid ?? '',
     encryptJobId: enriched?.encryptJobId ?? '',
+    expectId: enriched?.expectId ?? '',
     securityId: enriched?.securityId ?? '',
     name: enriched?.name ?? candidateName,
     jobName: enriched?.jobName ?? '',
@@ -1187,6 +1191,14 @@ export async function runGetCurrentChatJson(
   const scraped = await scrapeCurrentChatMessages(page);
   const summary = await fetchCandidateSummary(page, candidateName, true);
   const chatIdentity = await resolveChatIdentityForJson(page, candidateName, identity?.uniqueId);
+  if (!chatIdentity) throw new Error('当前会话缺少数字身份，禁止输出可入库数据');
+  const attachments = await readAttachmentStates(page);
+  let onlineResume: BossChatDetail['onlineResume'];
+  try { onlineResume = await readOnlineResumeState(page, chatIdentity); }
+  catch (error) {
+    // 明确报告版本检查失败，消息同步仍可完成；上层不得将失败当作简历未更新。
+    onlineResume = { error: error instanceof Error ? error.message : String(error) };
+  }
 
   const messages: BossChatMessage[] = scraped.messages.map((m) => ({
     time: m.time,
@@ -1195,6 +1207,8 @@ export async function runGetCurrentChatJson(
   }));
 
   return {
+    onlineResume,
+    attachments,
     ...(chatIdentity?.encryptUid ? { encryptUid: chatIdentity.encryptUid } : {}),
     ...(chatIdentity ? { uniqueId: chatIdentity.uniqueId } : {}),
     ...(chatIdentity ? { friendId: chatIdentity.friendId } : {}),
